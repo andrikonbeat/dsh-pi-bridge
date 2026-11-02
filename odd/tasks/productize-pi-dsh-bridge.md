@@ -97,3 +97,123 @@ L5 (evidence): `npm view` reports `dsh-pi-bridge@0.1.1` owned by `umnaut`
 L6 (evidence): the machine is not authenticated to npm (`npm whoami` fails), so
 `npm publish` and `npm login` remain human steps; the build stops at a
 pack-verified tarball.
+
+## Public CLI contract (frozen for 0.1.0)
+
+Package `pi-dsh-bridge`, ESM, zero runtime dependencies, `engines.node >= 22.19.0`.
+
+```
+pi-dsh-bridge <command> [options]
+
+Commands:
+  install     wire DeepSeek into Pi and install the dsh web launcher
+  doctor      cheap, offline health check (never spends API credit)
+  verify      end-to-end check; requires --yes (spends API credit)
+  uninstall   restore exactly what install changed
+  help        usage
+
+Options:
+  --dry-run            print the planned changes and write nothing
+  -y, --yes            do not ask for confirmation
+  --json               machine-readable output (doctor, install)
+  --pi-home <dir>      default $PI_HOME or ~/.pi/agent
+  --dsh-home <dir>     default $DSH_HOME or ~/.dsh
+  --bin-dir <dir>      default $BIN_DIR or ~/.local/bin
+  --state-dir <dir>    default $STATE_DIR or ~/.local/state/pi-dsh-bridge
+  --model <id>         Pi default model, default deepseek-flash
+  --provider <id>      Pi provider, default deepseek
+  -h, --help           usage
+  -V, --version        version
+
+Exit codes: 0 ok, 1 check failed, 2 usage error.
+```
+
+### Files it may create or change
+
+| Path | Change | Reversible by |
+| --- | --- | --- |
+| `$PI_HOME/settings.json` | `defaultProvider`, `defaultModel` (and `enabledModels` only when absent/empty) | journal records the exact prior values |
+| `$DSH_HOME/start-web.sh` | written from the asset, mode 0755 | journal records prior bytes or "absent" |
+| `$BIN_DIR/pi-deepseek` | written from the asset, mode 0755 (a real file, never a symlink into `node_modules`) | journal |
+| `$STATE_DIR/dsh-overlay.yml` | only when the effective dsh default model diverges | journal |
+| `$STATE_DIR/backups/<stamp>/` | prior bytes of every changed file | never deleted by uninstall |
+
+Everything else in `settings.json` is preserved: unknown keys, `packages`,
+`extensions`, `theme`, `deviceId`, and an existing non-empty `enabledModels`.
+
+### Journal
+
+`$STATE_DIR/journal.json`, one entry per changed path:
+
+```json
+{
+  "version": 1,
+  "installedAt": "<ISO>",
+  "versions": { "pi": "...", "dsh": "...", "node": "..." },
+  "entries": [
+    { "path": "<abs>", "before": "<abs backup path>" | null, "after": "settings-keys" | "file-copy" | "absent" }
+  ],
+  "settings": { "keys": ["defaultProvider", "defaultModel"], "before": { "defaultProvider": "..." } }
+}
+```
+
+`before: null` means the path did not exist and uninstall must delete it.
+Uninstall restores only the recorded entries, never a whole directory, never
+`git restore`/`git clean`, and never touches a file it did not record.
+
+### dsh integration
+
+Verified against `@deepseek-ai/dsh@0.2.1-rc.5`:
+
+- The shipped `web` profile already defaults to `provider: deepseek-official`,
+  `model: deepseek-flash`. Do not edit `$DSH_HOME/profiles/web/cordis.patch.yml`.
+- To read the effective config without booting anything:
+  `dsh --profile web --dump-config` (add `--patch <file>` when an overlay is installed).
+- `--patch <file>` applies after every bundle and after the user layer; a patch
+  entry whose `id` already exists replaces it rather than conflicting.
+- `--from-default-profile web` must never be used for a shipped profile name; it
+  errors with "profile \"web\" names shipped profile \"web\" and cannot be a
+  custom profile target".
+
+The launcher passes `--patch "$STATE_DIR/dsh-overlay.yml"` only when that file
+exists. The overlay is written only when the probe finds a divergence; the
+overlay content is:
+
+```yaml
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+```
+
+### doctor checks
+
+Each check reports `ok` / `warn` / `fail` plus a one-line detail; only `fail`
+sets exit code 1.
+
+1. node >= 22.19.0
+2. `pi` on PATH, with its version
+3. `dsh` on PATH, with its version and whether it matches the compatibility matrix
+4. `$PI_HOME/settings.json` parses and points at the requested provider/model
+5. a DeepSeek credential exists in `$PI_HOME/auth.json` (report presence only; never print the value)
+6. launcher installed, executable, and pointing at an existing file
+7. `pi-deepseek` wrapper in `$BIN_DIR`
+8. effective dsh default model matches the required route
+9. `$STATE_DIR` writable; if a journal exists, report version drift since install
+
+### Tests
+
+`node --test`, hermetic: every test builds a sandbox with fake `pi` and `dsh`
+executables on `PATH`, and never reads or writes the real home. Required cases:
+
+- `help` and `--version` exit 0; unknown command exits 2 with usage on stderr.
+- `install --dry-run` writes nothing (no file created, no journal written).
+- `install` creates the launcher and wrapper, and exits 0.
+- running `install` twice leaves the tree, the settings file and the journal byte-identical.
+- `install` preserves unrelated settings keys and an existing `enabledModels`.
+- `uninstall` restores the exact prior `settings.json` bytes and removes the wrapper and launcher.
+- `uninstall` deletes a file that did not exist before install.
+- `doctor --json` emits valid JSON and fails when `pi` is missing from PATH.
+- `doctor` warns on a dsh version outside the compatibility matrix.
+- `verify` refuses to run without `--yes`.

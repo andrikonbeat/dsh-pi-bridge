@@ -1,74 +1,105 @@
-# dsh-pi-bridge
+# pi-dsh-bridge
 
-DeepSeek models inside Pi / gentle-shell (keeping Pi's own tools), plus a ready-to-run DeepSeek Harness (`dsh`) web.
+DeepSeek inside Pi / gentle-shell — keeping every Pi tool — plus a working
+DeepSeek Harness (`dsh`) web launcher. It installs reversibly, checks itself,
+and undoes what it changed.
+
+> **Name note.** This project is published on npm as **`pi-dsh-bridge`**. The
+> npm name `dsh-pi-bridge` belongs to an unrelated package, so the GitHub
+> repository keeps that name while the package uses this one.
 
 ## TL;DR
 
 ```bash
-./install.sh      # backs up, then wires Pi defaults + the dsh web profile
-./verify.sh       # end-to-end: DeepSeek completion, Pi tools, dsh headless, dsh web
+npx pi-dsh-bridge doctor     # what is missing on this machine?
+npx pi-dsh-bridge install    # wire it up (reversible, journaled)
+npx pi-dsh-bridge verify     # prove it works end to end (spends API credit)
 ```
 
-- `pi-deepseek` -> Pi/gentle-shell on DeepSeek with every Pi tool.
-- `~/.dsh/start-web.sh` -> dsh web at `http://127.0.0.1:3080` (open the token URL it prints).
+Nothing is hidden: `install --dry-run` prints every file it would touch and
+writes nothing, and `uninstall` restores the exact previous bytes.
 
-## Architecture
+## What it does
 
 Two independent surfaces, one integration point.
 
 ```
-Pi / gentle-shell  --(native deepseek provider)-->  api.deepseek.com
+Pi / gentle-shell   --(Pi's native deepseek provider)-->  api.deepseek.com
    tools: read, bash, edit, write, MCP, skills, extensions
 
-dsh web / headless --(deepseek-official API-key route)--> api.deepseek.com
+dsh web / headless  --(deepseek-official API-key route)-->  api.deepseek.com
    its own agent loop and its own tools
 ```
 
-### Why there is no agent bridge (Pi -> dsh)
+- **Pi side**: points Pi's default provider/model at DeepSeek and installs a
+  `pi-deepseek` wrapper for flag-driven runs. Pi keeps all of its own tools.
+- **dsh side**: installs `$DSH_HOME/start-web.sh`, which reuses the DeepSeek
+  credential Pi already stores, so the key is never duplicated into a config
+  file or a second dotfile.
 
-`dsh` exposes ACP and SDK profiles, but it is a *different agent*: it has its own loop and its own tools. Pi has no ACP client, and its subagents are model-based, not command-based. Routing Pi's turns into dsh would replace Pi's loop and lose Pi's tools, the opposite of the goal ("use the model, keep gentle-shell's tools").
+## What it changes, and how to undo it
 
-Pi already ships a native `deepseek` provider, so the correct integration is at the model layer:
+| Path | Change |
+| --- | --- |
+| `$PI_HOME/settings.json` | sets `defaultProvider` and `defaultModel`; every other key is preserved |
+| `$DSH_HOME/start-web.sh` | the web launcher, mode `0755` |
+| `$BIN_DIR/pi-deepseek` | the wrapper, mode `0755` (a real file, never a symlink into `node_modules`) |
+| `$STATE_DIR/dsh-overlay.yml` | only when the effective dsh default model diverges from the required route |
+
+Every changed path is recorded in `$STATE_DIR/journal.json` with a byte copy of
+its previous content. `uninstall` restores exactly those paths, deletes the ones
+that did not exist before, and touches nothing it did not record.
+
+`$STATE_DIR` defaults to `~/.local/state/pi-dsh-bridge` — outside the
+repository, so pulling a new version never lands on top of your backups.
+
+## Requirements
+
+| Requirement | Why |
+| --- | --- |
+| Node.js >= 22.19.0 | the floor `@deepseek-ai/dsh` declares |
+| `pi` on `PATH` | installs Pi's DeepSeek defaults, and `verify` drives it |
+| `dsh` on `PATH` | the web launcher execs it; `doctor` reports version drift |
+| A DeepSeek credential | `pi auth login --provider deepseek` writes it once, both sides read it |
+
+The CLI itself has **zero runtime dependencies**: `npx` is instant and there is
+no transitive supply chain to audit.
+
+## Commands
 
 ```bash
-pi --provider deepseek --model deepseek-flash
+pi-dsh-bridge install     [--dry-run] [-y] [--json] [--model <id>] [--provider <id>]
+pi-dsh-bridge doctor      [--json]
+pi-dsh-bridge verify      --yes
+pi-dsh-bridge uninstall   [--dry-run] [-y]
+pi-dsh-bridge help
 ```
 
-That is exactly what `bin/pi-deepseek` runs.
-
-## What `install.sh` changes
-
-| Target | Change |
+| Flag | Meaning |
 | --- | --- |
-| `~/.pi/agent/settings.json` | `defaultProvider=deepseek`, `defaultModel=deepseek-flash`, `enabledModels=["deepseek/*"]` when unset |
-| `~/.dsh/profiles/web/cordis.patch.yml` | default model route `deepseek-account` -> `deepseek-official` |
-| `~/.dsh/start-web.sh` | launcher that reads the key from Pi's auth store |
-| `~/.local/bin/pi-deepseek` | symlink to `bin/pi-deepseek` |
+| `--dry-run` | print the plan and write nothing |
+| `-y`, `--yes` | do not prompt for confirmation |
+| `--json` | machine-readable output |
+| `--pi-home <dir>` | default `$PI_HOME` or `~/.pi/agent` |
+| `--dsh-home <dir>` | default `$DSH_HOME` or `~/.dsh` |
+| `--bin-dir <dir>` | default `$BIN_DIR` or `~/.local/bin` |
+| `--state-dir <dir>` | default `$STATE_DIR` or `~/.local/state/pi-dsh-bridge` |
+| `--model <id>` | Pi default model, default `deepseek-flash` |
+| `--provider <id>` | Pi provider, default `deepseek` |
 
-Every touched file is copied to `backups/<timestamp>/` first. `uninstall.sh` restores the latest backup.
+Exit codes: `0` success, `1` a check failed, `2` usage error.
 
-## Models
+`doctor` is cheap and offline: versions, presence, writability, effective dsh
+config, credential presence. It never prints a credential value and never calls
+the DeepSeek API. `verify` is the paid end-to-end path and requires `--yes`.
 
-| Model id | Notes |
-| --- | --- |
-| `deepseek-flash` | DeepSeek V4.1 Flash (verified end-to-end) |
-| `deepseek-v4-pro` | larger sibling |
+## After installing
 
-Use the wire ids exactly; Pi's internal `chat:` prefix must not be used (the API answers 400).
-
-## Usage
-
-Open gentle-shell the usual way. It starts on DeepSeek because `install.sh` set
-`defaultProvider=deepseek` and `defaultModel=deepseek-flash` in the Pi home
-that the launcher links to (`gentle-shell home` -> `link ~/.pi/agent`). Inside
-the session, `Ctrl+P` opens the model picker: under the `deepseek` provider you
-will find `deepseek-flash` (1M context, thinking, images) and `deepseek-v4-pro`.
-
-`pi-deepseek` is only a shortcut for flag-driven or non-interactive runs:
+Open `gentle-shell` as usual; it now starts on DeepSeek. `Ctrl+P` opens the
+model picker under the `deepseek` provider. For non-interactive runs:
 
 ```bash
-pi-deepseek                          # interactive, same as gentle-shell on DeepSeek
-pi-deepseek --print "one shot"       # non-interactive
+pi-deepseek --print "one shot"
 pi-deepseek --provider deepseek --model deepseek-v4-pro
 ```
 
@@ -78,42 +109,41 @@ DSH_PORT=3090 ~/.dsh/start-web.sh    # another port
 DSH_WORKSPACE=~/code ~/.dsh/start-web.sh
 ```
 
-`start-web.sh` does not duplicate the secret: it reads `DEEPSEEK_API_KEY` from the environment or from `~/.pi/agent/auth.json` at launch time.
+Open the exact `http://127.0.0.1:3080/?token=...` URL that `dsh web` prints. A
+plain `curl` without the browser flow answers `401` by design.
 
-## Startup cost
+## What this is not
 
-Measured on this machine with the full package set:
+**It is not an agent bridge (Pi → dsh).** `dsh` exposes ACP and SDK profiles,
+but it is a *different agent*: its own loop, its own tools. Pi has no ACP
+client, and its subagents are model-based rather than command-based. Routing
+Pi's turns into `dsh` would replace Pi's loop and lose Pi's tools — the opposite
+of the goal ("use the model, keep gentle-shell's tools").
 
-| Run | Time |
-| --- | --- |
-| `pi -ne` (no extensions, no tools) | ~3 s |
-| `pi --no-skill-registry` | ~30 s |
-| `pi --no-skill-registry --no-mcp` | ~25 s |
+**It is not a model implementation.** Pi's `deepseek` provider is native; this
+project only configures it, and only in the two files listed above.
 
-The skill-registry refresh costs about 20 s; the MCP servers (codegraph, context7, engram, rea) cost the rest. `pi-deepseek` skips the registry refresh by default (`PI_DEEPSEEK_FULL_STARTUP=1` keeps it).
+## Compatibility
+
+`dsh` is a release candidate owned by DeepSeek, not by this project. The
+supported versions, what is verified, and what `doctor` does when it sees
+something else are in [`docs/compatibility.md`](docs/compatibility.md).
 
 ## Troubleshooting
 
-- **Pi seems to hang at startup (>60 s, no output)**: the Pi home was declaring `npm:gentle-pi` *and* the gentle-pi package by path. Pi then npm-installs the whole package on every start (slow registry) and registers the same tools twice (`Tool "write" conflicts with ...`). The gentle-shell launcher itself documents that an `npm:gentle-pi` declaration must never survive. Keep exactly one declaration, by local path.
-- **Do not pass `--link` to `gentle-shell`**: the plain launcher (`gentle-shell`, no flags) is verified to leave `settings.json` untouched. The explicit `--link` flag performs a take-over that rewrites the package declaration in `settings.json`, which is how the duplicate `npm:gentle-pi` entry got in during setup.
-- **Pi clones the gentle-shell repo on every start**: `~/.pi/agent/git/github.com/Gentleman-Programming/gentle-shell` was an incomplete checkout (`.git` only, no `HEAD`), so Pi re-cloned 72277 objects at ~150 KiB/s. Fix: complete the checkout once, and make sure its dependencies resolve (`node_modules/@heyhuynhgiabuu/pi-pretty`).
-- **Pi exits 1 with `403 Forbidden`**: the previous default provider (`nvidia`) route is failing. `install.sh` switches the default to DeepSeek. Check with `pi auth check --provider deepseek`.
-- **dsh web hangs or logs 403**: the old `vision-git` shim (removed) and the `deepseek-account` route (403 on `/auth-api/v0/users/current`) were the causes. The launcher uses the verified `deepseek-official` API-key route.
-- **dsh web asks for auth**: open the exact `http://127.0.0.1:3080/?token=...` URL printed by `dsh web`. A plain `curl` without the browser flow returns 401 by design.
+See [`docs/troubleshooting.md`](docs/troubleshooting.md). If you are filing a
+bug, include the output of `npx pi-dsh-bridge doctor --json`.
 
-## Testing against another gentle-shell install
-
-To exercise a different installation without touching the live Pi home:
+## Development
 
 ```bash
-TH=/tmp/pi-home-test
-mkdir -p "$TH"
-cp ~/.pi/agent/auth.json "$TH/auth.json"
-cp ~/.pi/agent/mcp.json "$TH/mcp.json"
-printf '{"defaultProvider":"deepseek","defaultModel":"deepseek-flash"}\n' > "$TH/settings.json"
-
-gentle-shell --home "$TH" --package-root "/path/to/gentle-shell" -- \
-  --provider deepseek --model deepseek-flash --no-session --print "Respondé exactamente: OK"
+node --test        # hermetic suite: fake pi/dsh, temp homes, no network
+npm run pack:check # what would actually be published
 ```
 
-`--package-root` needs the target checkout's dependencies to resolve (`@heyhuynhgiabuu/pi-pretty`); a symlink into `~/.pi/agent/npm/node_modules` is enough.
+The public command and flag names are a frozen contract: adding a command is a
+minor bump, changing or removing one is a major bump.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
