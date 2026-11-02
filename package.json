@@ -46,7 +46,6 @@
     "url": "https://github.com/andrikonbeat/dsh-pi-bridge/issues"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": false
+    "access": "public"
   }
 }
