@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # The package has no dependencies on purpose. If this ever needs
+      # `npm ci`, the zero-dependency property was lost and that is the bug.
+      - name: Assert the package has no dependencies
+        run: |
+          deps="$(npm pkg get dependencies devDependencies | tr -d '{}[:space:]')"
+          if [ -n "$deps" ]; then
+            echo "::error::dependencies are not allowed in this package: $deps"
+            exit 1
+          fi
+
+      - name: Test
+        run: npm test
+
+  publish-surface:
+    name: published file set
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Pack and inspect the tarball
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const pack = require("./pack.json")[0];
+            const names = pack.files.map((f) => f.path);
+            const required = ["bin/cli.js", "package.json", "README.md", "LICENSE", "CHANGELOG.md"];
+            const forbidden = [/^\.atl\//, /^backups\//, /^odd\//, /^test\//, /^docs\//,
+                               /^\.github\//, /skill-registry/, /\.log$/];
+            const missing = required.filter((p) => !names.includes(p));
+            const leaked = names.filter((p) => forbidden.some((re) => re.test(p)));
+            if (missing.length) { console.error("missing from tarball:", missing); process.exitCode = 1; }
+            if (leaked.length)  { console.error("private paths leaked into the tarball:", leaked); process.exitCode = 1; }
+            console.log(`tarball: ${names.length} files, ${pack.size} bytes packed`);
+          '
+
+  scripts:
+    name: shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: |
+          for f in install.sh verify.sh uninstall.sh bin/pi-deepseek dsh/start-web.sh assets/pi-deepseek.sh; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+            bash -n "$f" && echo "ok: $f"
+          done
+      - name: ShellCheck
+        run: shellcheck --severity=warning install.sh verify.sh uninstall.sh bin/pi-deepseek dsh/start-web.sh
+
+  repository-hygiene:
+    name: no private artifacts in git
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert private paths are not tracked
+        run: |
+          if git ls-files | grep -E '^(\.atl/|backups/)|skill-registry|\.log$'; then
+            echo "::error::private, machine-specific artifacts are tracked by git"
+            exit 1
+          fi
+          echo "clean"
