@@ -62,17 +62,17 @@ S12. The npm name `dsh-pi-bridge` is already taken by an unrelated package
 
 | ID | Spec | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S7 S8 — git init, .gitignore, LICENSE, baseline commit | inline | | |
-| T2 | S1 S10 — CLI skeleton, paths/preflight/state libs, RED tests | inline | | |
-| T3 | S2 S3 S4 — install command (dry-run, merge, idempotency) | inline | | |
-| T4 | S2 S3 — uninstall command (exact restore from journal) | inline | | |
-| T5 | S5 S6 — doctor command (offline checks, drift, --json) | inline | | |
-| T6 | S6 — verify command (costly E2E behind --yes) | inline | | |
-| T7 | S5 S4 — dsh overlay + launcher with divergence detection | inline | | |
-| T8 | S11 — shims for install.sh / verify.sh / uninstall.sh | inline | | |
-| T9 | S8 S12 — README as product, CONTRIBUTING, compat matrix | inline | | |
-| T10 | S9 — CI workflow and npm pack validation | inline | | |
-| T11 | all — full suite, doctor on the real machine, release check | inline | | |
+| T1 | S7 S8 — git init, .gitignore, LICENSE, baseline commit | inline | done | 5b36783 |
+| T2 | S1 S10 — CLI skeleton, paths/preflight/state libs, RED tests | worker | done | 9018b83 |
+| T3 | S2 S3 S4 — install command (dry-run, merge, idempotency) | worker | done | 9018b83 |
+| T4 | S2 S3 — uninstall command (exact restore from journal) | worker | done | 9018b83 |
+| T5 | S5 S6 — doctor command (offline checks, drift, --json) | worker | done | 9018b83 |
+| T6 | S6 — verify command (costly E2E behind --yes) | worker | done | 9018b83 |
+| T7 | S5 S4 — dsh overlay + launcher with divergence detection | worker | done | 9018b83 |
+| T8 | S11 — shims for install.sh / verify.sh / uninstall.sh | inline | done | 9018b83 |
+| T9 | S8 S12 — README as product, CONTRIBUTING, compat matrix | inline | done | bd8c75c |
+| T10 | S9 — CI workflow and npm pack validation | inline | done | 8e726e3 |
+| T11 | all — full suite, doctor on the real machine, release check | inline | in progress | |
 
 ## Log
 
@@ -97,6 +97,19 @@ L5 (evidence): `npm view` reports `dsh-pi-bridge@0.1.1` owned by `umnaut`
 L6 (evidence): the machine is not authenticated to npm (`npm whoami` fails), so
 `npm publish` and `npm login` remain human steps; the build stops at a
 pack-verified tarball.
+L7 (evidence, T2-T8): the parent re-ran the suite (45/45, exit 0), confirmed the
+inode guard (48599), and checked `install` idempotency against a copy of the
+real `~/.pi/agent/settings.json` in a sandbox: the first run only appends
+`enabledModels`, leaving key order and every other key byte-identical, and the
+second run reports `nothing to do` with one backup batch in total. `doctor`
+reports 9/9 ok on the real machine with a live `dsh --dump-config` probe.
+L8 (follow-up, cosmetic, not a defect): the install plan's detail line for
+`settings.json` lists every managed key (`Object.keys(desired)`), so a machine
+that already had the right provider still reads `updated ... defaultProvider,
+defaultModel`. The journal and the written bytes are correct; only the summary
+text overstates. Fix by diffing `desired` against `current.data` and naming only
+the keys that actually change, plus one test that seeds a correct provider and
+asserts the detail names only `enabledModels`.
 
 ## Public CLI contract (frozen for 0.1.0)
 
