@@ -1,5 +1,6 @@
 import { ensureAccount } from '../onboarding.js';
 import { grantState } from '../dsh-account.js';
+import { packageVersion } from '../paths.js';
 
 /**
  * `account` — the one command for everything account-shaped.
@@ -18,7 +19,7 @@ export async function account({ options = {}, ui, layout, env = process.env, cli
   const interactive = ui.json ? false : process.stdin.isTTY === true && process.stdout.isTTY === true;
 
   if (!ui.json) {
-    ui.banner();
+    ui.banner({ version: packageVersion() });
   }
 
   if (status.state === 'usable' && !options.relogin && !options.restart) {

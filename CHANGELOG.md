@@ -4,7 +4,11 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-02
+
+The release that makes the bridge a product rather than a recipe: one DeepSeek
+account shared between Pi and the dsh web interface, and an install that
+finishes the job instead of handing over a to-do list.
 
 ### Added
 
@@ -64,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `doctor` no longer reports a merely present API key as healthy: presence is
   not working, and only `verify` can prove a balance.
 
-## [0.1.0]
+## [0.1.0] - 2026-11-01
 
 First released version. The package turns a personal shell-script setup recipe
 into a versioned CLI with a frozen public contract.
@@ -101,5 +105,5 @@ into a versioned CLI with a frozen public contract.
   painful change to undo. An overlay is now applied at launch time and only
   when the effective default model diverges.
 
-[Unreleased]: https://github.com/andrikonbeat/dsh-pi-bridge/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/andrikonbeat/dsh-pi-bridge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/andrikonbeat/dsh-pi-bridge/releases/tag/v0.1.0
