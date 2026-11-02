@@ -101,7 +101,7 @@ function contentChange({ file, bytes, mode, kind = 'file', detail = '' }) {
  * which a path inside a package directory would not.
  */
 function helperChange({ layout, cliPath }) {
-  const bytes = Buffer.from(renderHelper({ cliPath, dshHome: layout.dshHome }));
+  const bytes = Buffer.from(renderHelper({ cliPath }));
   return contentChange({
     file: layout.tokenHelperPath,
     bytes,

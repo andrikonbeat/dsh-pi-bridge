@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Print the DeepSeek account token that Pi's shared provider sends.
+# Run the pi-dsh-bridge CLI wherever it was installed.
 #
-# Pi calls this through the `!command` value of the `x-dsh-auth-token`
-# header in models.json. Two rules follow from that:
+# Pi records this helper's absolute path in models.json and runs it through
+# the shell to obtain the account token. Keeping the path here — instead of
+# pointing Pi straight at a package directory — is what lets the bridge
+# survive an `npx` cache clean and a package upgrade.
 #
-#   - stdout carries the token and nothing else;
-#   - every diagnostic goes to stderr.
+# This script takes no arguments of its own: whatever Pi asks for is passed
+# straight to the CLI.
+#
+#   pi-dsh-token token --dsh-home /home/me/.dsh
+#   pi-dsh-token token --check --dsh-home /home/me/.dsh
 #
 # The token itself is never written to a file by this project: it is read
 # from the dsh credentials store at call time and handed straight to Pi.
 #
-# Installed by pi-dsh-bridge install. Set PI_DSH_BRIDGE_BIN to point Pi at a
-# different copy of the CLI.
+# Set PI_DSH_BRIDGE_BIN to point Pi at a different copy of the CLI.
 set -euo pipefail
 
-DSH_HOME_DIR="${DSH_HOME:-__DSH_HOME__}"
 CLI="${PI_DSH_BRIDGE_BIN:-__CLI_PATH__}"
 
 if [ ! -x "$CLI" ] && ! command -v "$CLI" >/dev/null 2>&1; then
@@ -26,4 +29,4 @@ if [ ! -x "$CLI" ] && ! command -v "$CLI" >/dev/null 2>&1; then
   fi
 fi
 
-exec "$CLI" token --dsh-home "$DSH_HOME_DIR" "$@"
+exec "$CLI" "$@"

@@ -26,7 +26,7 @@ BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 ACCOUNT_OK=0
 TOKEN_HELPER="$BIN_DIR/pi-dsh-token"
 if [ -x "$TOKEN_HELPER" ]; then
-  if "$TOKEN_HELPER" --check >/dev/null 2>&1; then ACCOUNT_OK=1; fi
+  if "$TOKEN_HELPER" token --check --dsh-home "$DSH_HOME" >/dev/null 2>&1; then ACCOUNT_OK=1; fi
 elif command -v pi-dsh-bridge >/dev/null 2>&1; then
   if pi-dsh-bridge token --check --dsh-home "$DSH_HOME" >/dev/null 2>&1; then ACCOUNT_OK=1; fi
 fi
@@ -79,4 +79,8 @@ cd "$WS"
 
 PORT="${DSH_PORT:-3080}"
 echo "DeepSeek Harness web -> http://127.0.0.1:$PORT (open the token URL printed below)"
-exec dsh web --port "$PORT" --no-open ${PATCH_ARGS[@]+"${PATCH_ARGS[@]}"}
+
+# dsh's grammar is `dsh [--profile] <name> [options] [app-args...]`. With the
+# profile named explicitly the app flags follow the global options, and the
+# `web` shortcut must not be repeated.
+exec dsh --profile web ${PATCH_ARGS[@]+"${PATCH_ARGS[@]}"} --port "$PORT" --no-open

@@ -202,3 +202,9 @@ L16 (incident, worked around): the delegation runtime failed five times with
 `invalid_request` before any tool call, at every context size. The work was
 done inline instead, and every file the workers would have touched is
 committed here.
+L17 (decision, by the user): the native RDD review is skipped for this
+candidate. `gentle_review assess` was run first (read-only) and rated the
+candidate high risk with `reviewDue: true`; the receipt-driven review
+lifecycle was then not started, by explicit instruction. The independent
+verifier required by the risk tier still runs, because that requirement comes
+from the risk classification and not from RDD.

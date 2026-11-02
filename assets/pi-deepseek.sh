@@ -37,10 +37,11 @@ MODEL="${PI_DEEPSEEK_MODEL:-deepseek-flash}"
 # or half-written credential surfaces as a 401 from DeepSeek with no hint of
 # what went wrong.
 HELPER="$(dirname "$0")/pi-dsh-token"
+DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 if [ -x "$HELPER" ]; then
-  TOKEN_CHECK=("$HELPER" --check)
+  TOKEN_CHECK=("$HELPER" token --check --dsh-home "$DSH_HOME_DIR")
 elif command -v pi-dsh-bridge >/dev/null 2>&1; then
-  TOKEN_CHECK=(pi-dsh-bridge token --check)
+  TOKEN_CHECK=(pi-dsh-bridge token --check --dsh-home "$DSH_HOME_DIR")
 else
   TOKEN_CHECK=()
 fi

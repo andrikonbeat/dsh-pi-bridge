@@ -1,5 +1,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -9,6 +10,7 @@ import {
   journalPath,
   readJson,
   run,
+  sandboxEnv,
 } from './helpers.js';
 
 const TOKEN = 'account-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -128,6 +130,31 @@ describe('the shared-account bridge', () => {
       assert.equal(result.status, 1);
       assert.match(result.stderr, /expected "grant"/);
       assert.equal(fs.existsSync(modelsPath(box)), false);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('the command Pi runs produces the token, exactly as Pi invokes it', () => {
+    const box = createSandbox();
+    try {
+      writeCredentials(box);
+      assert.equal(run(['install', '--yes'], box).status, 0);
+
+      // Pi strips the leading `!` and runs the rest through the shell, then
+      // takes its stdout. Running the very same command is the only way to
+      // catch one that reads well but composes wrong.
+      const header = providerOf(box).headers['x-dsh-auth-token'];
+      const result = spawnSync('/bin/sh', ['-c', header.slice(1)], {
+        encoding: 'utf8',
+        // Pi runs the command with the user's PATH, where node lives; the
+        // CLI is a node script reached through its shebang.
+        env: sandboxEnv(box, {
+          PATH: `${box.fakebin}:${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+        }),
+      });
+      assert.equal(result.status, 0, `the header command failed: ${result.stderr}`);
+      assert.equal(result.stdout.trim(), TOKEN);
     } finally {
       cleanupSandbox(box);
     }

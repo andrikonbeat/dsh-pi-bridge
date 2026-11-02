@@ -12,12 +12,14 @@ const HELPER_ASSET = 'pi-dsh-token.sh';
  * survives an `npx` cache clean and a package upgrade. The helper resolves
  * the CLI at call time, preferring the copy it was installed from and
  * falling back to whatever `pi-dsh-bridge` is on PATH.
+ *
+ * The helper adds no arguments of its own: whatever Pi asks for is passed
+ * straight through, so the command recorded in `models.json` is the same
+ * whether it names the helper or the CLI.
  */
-export function renderHelper({ cliPath, dshHome }) {
+export function renderHelper({ cliPath }) {
   const template = fs.readFileSync(assetPath(HELPER_ASSET), 'utf8');
-  return template
-    .replaceAll('__CLI_PATH__', cliPath)
-    .replaceAll('__DSH_HOME__', dshHome);
+  return template.replaceAll('__CLI_PATH__', cliPath);
 }
 
 /**
