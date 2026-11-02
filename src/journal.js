@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
+import { writeFileAtomic } from './fs-atomic.js';
+
 export const JOURNAL_VERSION = 1;
 
 /** A journal we cannot read is a hard stop: nothing may be restored from it. */
@@ -38,8 +40,7 @@ export function readJournal(file) {
 }
 
 export function writeJournal(file, journal) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(journal, null, 2)}\n`);
+  writeFileAtomic(file, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o644 });
 }
 
 export function createJournal({ versions, installedAt = new Date().toISOString() }) {
