@@ -99,16 +99,37 @@ disabled and `doctor` says so.
 
 | ID | Spec | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S5 S12 — read the dsh account grant (strict, no deps) | inline | | |
-| T2 | S1 S4 S5 — write the shared provider into `models.json` | inline | | |
-| T3 | S2 — `pi-deepseek` resolves the credential fresh at each start | inline | | |
-| T4 | S3 — `sync` command | inline | | |
-| T5 | S6 S7 — `doctor`: absent / unusable / usable, per credential | inline | | |
-| T6 | S8 S11 — `uninstall` restores the previous `models.json` exactly | inline | | |
-| T7 | S9 — dsh launcher uses the account route consistently | inline | | |
-| T8 | S10 — `verify` exercises the shared route | inline | | |
-| T9 | all — tests over a hermetic sandbox | inline | | |
-| T10 | S1 S4 — docs: what the bridge does, how to use it, how it fails | inline | | |
+| T1 | S5 S12 — read the dsh account grant (strict, no deps) | inline | done | 596b409 |
+| T2 | S1 S4 S5 — write the shared provider into `models.json` | inline | done | 596b409 |
+| T3 | S2 — `pi-deepseek` resolves the credential fresh at each start | inline | done | 596b409 |
+| T4 | S3 — `sync` command | inline | done | 596b409 |
+| T5 | S6 S7 — `doctor`: absent / unusable / usable, per credential | inline | done | 596b409 |
+| T6 | S8 S11 — `uninstall` restores the previous `models.json` exactly | inline | done | 596b409 |
+| T7 | S9 — dsh launcher uses the account route consistently | inline | done | 596b409 |
+| T8 | S10 — `verify` exercises the shared route | inline | done | 596b409 |
+| T9 | all — tests over a hermetic sandbox | inline | done | 596b409 |
+| T10 | S1 S4 — docs: what the bridge does, how to use it, how it fails | inline | done | fc93605 |
+
+## Delivery
+
+The slice boundary, recorded because the implementation slice is larger than
+the usual ~400 authored lines:
+
+| Commit | Slice | Lines | Why it is one unit |
+| --- | --- | --- | --- |
+| `e5c4956` | the specification | 135 | the contract the work is measured against |
+| `596b409` | the implementation | ~1,460 | the provider, the grant parser, `sync`, `install`, `doctor`, `verify`, the two launchers and the tests are one coupled behaviour: splitting them would leave the suite red at the intermediate commits, because `install` writes the provider that `doctor` and `verify` then inspect |
+| `fc93605` | the documentation | 310 | reader-facing, reviewable on its own |
+
+If this feature needs a pull request rather than a direct merge, it is a
+stacked delivery: the specification and the implementation first, the
+documentation and the release preparation second. The risk line for the
+implementation slice names item 2 (credentials), so it must be reviewable on
+its own: the token is read from the dsh credentials store at request time,
+never written to disk by this project, and no diagnostic path prints a
+credential value.
+
+## Log
 
 ## Log
 
@@ -142,3 +163,42 @@ L8 (constraint, accepted): `x-dsh-auth-token` is an undocumented DeepSeek
 header and `~/.dsh/.credentials.yaml` is an internal dsh format in a release
 candidate. The bridge therefore ships with an explicit, tested fallback to the
 API-key path, and `doctor` states which path is live.
+L9 (evidence): the account grant and the stored API key are the same wallet,
+and only one of them has credit. `GET https://api.deepseek.com/user/balance`
+with the account token in `x-dsh-auth-token` returns `HTTP 200` with
+`is_available: true`, `USD 0.00` and `CNY 5.95`. The same endpoint with the
+stored API key as `Authorization: Bearer` returns `HTTP 200` with
+`is_available: false` and a `0.00` balance.
+L10 (evidence, header contract): the account token is accepted only in
+`x-dsh-auth-token`. As `Authorization: Bearer` it is `401`. A valid
+`x-dsh-auth-token` wins over `Authorization`; a non-empty but invalid one
+fails with `401` and NO fallback; an empty or absent one behaves as absent
+and lets `Authorization` carry the request. The token command therefore never
+prints a placeholder, and the fallback lives at the configuration level.
+L11 (evidence, correction): `authHeader: false` in `models.json` does not stop
+the OpenAI-compatible SDK from sending `Authorization` when a stored
+credential exists. A stale API key may travel alongside the account token;
+DeepSeek ignores it while the account token is valid. The stored key is kept
+on purpose: it is the explicit fallback route.
+L12 (evidence, end to end): with a sandboxed `PI_CODING_AGENT_DIR`, `sync`,
+the real dsh credentials and the real Pi, one prompt was answered `BRIDGE_OK`
+through the account route. With the grant file moved away, Pi failed before
+sending any request, with `Failed to resolve provider "deepseek" header
+"x-dsh-auth-token" from shell command: ...` — the failure names the cause,
+and `pi-deepseek` now checks the same thing before Pi starts.
+L13 (correction): Pi reads its own configuration from `$PI_CODING_AGENT_DIR`,
+not from `$PI_HOME`. A test that assumed `PI_HOME` had written to the real
+`~/.pi/agent/models.json`; it was restored by removing only the injected
+provider, and `resolveLayout` now prefers the variable Pi itself reads.
+L14 (evidence): the repeated `403` against `/auth-api/v0/users/current` are
+Cloudflare HTML blocking `platform.deepseek.com` from this machine, not a
+credential failure. Restarting `dsh web` stopped the repetition, and the
+account route loads its model list afterwards. Inference was never affected.
+L15 (decision): the dsh route moved from `deepseek-official` to
+`deepseek-account` so that dsh and Pi spend the same wallet. The API-key
+route remains available as an explicit fallback and `doctor` says which one
+is live.
+L16 (incident, worked around): the delegation runtime failed five times with
+`invalid_request` before any tool call, at every context size. The work was
+done inline instead, and every file the workers would have touched is
+committed here.
