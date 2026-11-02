@@ -11,11 +11,16 @@ and undoes what it changed.
 ## TL;DR
 
 ```bash
-npx pi-dsh-bridge doctor     # what is missing on this machine?
-npx pi-dsh-bridge install    # wire it up (reversible, journaled)
-npx pi-dsh-bridge sync       # point Pi at the account dsh web is signed in to
-npx pi-dsh-bridge verify     # prove it works end to end (spends API credit)
+npx pi-dsh-bridge install    # one command: wires everything and connects your account
+pi                           # use it
+npx pi-dsh-bridge account    # only when you switch accounts
 ```
+
+`install` ends by opening the dsh web panel, handing you the sign-in URL and
+waiting until the account appears — you do not have to understand what a grant,
+a header or `models.json` is, and you never run a second command to finish the
+first. If you install before signing in, the wiring is already in place: the
+moment you sign in, the next `pi` start uses that account.
 
 Nothing is hidden: `install --dry-run` prints every file it would touch and
 writes nothing, and `uninstall` restores the exact previous bytes.
@@ -86,11 +91,12 @@ no transitive supply chain to audit.
 ## Commands
 
 ```bash
-pi-dsh-bridge install     [--dry-run] [-y] [--json] [--model <id>] [--provider <id>]
-pi-dsh-bridge sync        [--dry-run] [--json]
+pi-dsh-bridge install     [--dry-run] [-y] [--json] [--open] [--model <id>] [--provider <id>]
+pi-dsh-bridge account     [--relogin] [--restart] [--open] [--json]
 pi-dsh-bridge doctor      [--json]
 pi-dsh-bridge verify      --yes
 pi-dsh-bridge uninstall   [--dry-run] [-y]
+pi-dsh-bridge sync        [--dry-run] [--json]
 pi-dsh-bridge token       [--check]
 pi-dsh-bridge help
 ```
@@ -100,6 +106,11 @@ pi-dsh-bridge help
 | `--dry-run` | print the plan and write nothing |
 | `-y`, `--yes` | do not prompt for confirmation |
 | `--json` | machine-readable output |
+| `--no-color` | plain output, no ANSI colour |
+| `--ascii` | ASCII glyphs only, for terminals without box drawing |
+| `--open` | `install`/`account`: try to open the sign-in URL in a browser |
+| `--relogin` | `account`: re-open the panel even when an account already works |
+| `--restart` | `account`: restart the dsh web panel to mint a fresh sign-in URL |
 | `--pi-home <dir>` | default `$PI_CODING_AGENT_DIR` or `~/.pi/agent` |
 | `--dsh-home <dir>` | default `$DSH_HOME` or `~/.dsh` |
 | `--bin-dir <dir>` | default `$BIN_DIR` or `~/.local/bin` |
@@ -159,9 +170,7 @@ API-key route keeps working untouched. Nothing is half-wired.
 
 Open `gentle-shell` as usual; it now starts on DeepSeek, spending the same
 account as the dsh web interface. `Ctrl+P` opens the model picker under the
-`deepseek` provider. After signing in to a different DeepSeek account in the
-dsh web interface, the next Pi start uses it — nothing to copy, nothing to
-restart. For non-interactive runs:
+`deepseek` provider. For non-interactive runs:
 
 ```bash
 pi-deepseek --print "one shot"
@@ -174,8 +183,20 @@ DSH_PORT=3090 ~/.dsh/start-web.sh    # another port
 DSH_WORKSPACE=~/code ~/.dsh/start-web.sh
 ```
 
-Open the exact `http://127.0.0.1:3080/?token=...` URL that `dsh web` prints. A
+Or let the CLI start it and hand you the URL:
+
+```bash
+pi-dsh-bridge account --restart --open
+```
+
+Open the exact `http://127.0.0.1:3080/?token=...` URL that the panel prints. A
 plain `curl` without the browser flow answers `401` by design.
+
+### Switching accounts
+
+When your quota runs out, sign in to another DeepSeek account in the panel and
+run `pi-dsh-bridge account`: it detects the change, re-wires Pi, and says so.
+There is nothing to copy and nothing to edit.
 
 ## What this is not
 

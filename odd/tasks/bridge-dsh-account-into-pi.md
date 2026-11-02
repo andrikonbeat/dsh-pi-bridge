@@ -233,3 +233,30 @@ the overlay. Real Pi answered `BRIDGE_OK` through the account route, the
 check green except the deliberate warning that a stored API key's balance is
 not checked offline. dsh web came back on the account route, with the
 Cloudflare block on the account dashboard reported once.
+L21 (bug, reported by the user, fixed in `af03d01`): Pi failed with `Failed to
+resolve provider "deepseek" header "x-dsh-auth-token" from shell command:
+.../pi-dsh-token token --dsh-home ~/.dsh` on a bridge that had just answered
+`BRIDGE_OK`. Root cause: `install` replaced the helper with `writeFileSync`,
+which truncates before writing, and Pi executes that helper on every request.
+Any request arriving in that window read a script mid-write. The same risk
+applied to `models.json`, which Pi parses at startup. Both are now written to a
+sibling temporary file and renamed into place — atomic within a filesystem —
+and the journal's writes and `uninstall`'s restores use the same path.
+L22 (decision): the shared provider is now written whether or not a grant
+exists. It is a command, not a token, so it is valid before sign-in. The
+previous behaviour (skip when there is no grant) made the user fall back
+silently to Pi's built-in `deepseek` provider — a different wallet — and the
+symptom was a bare `402` with no hint. Consequence: signing in is now the only
+step left, and it needs no second command.
+L23 (feature, in `86e3632`): `install` ends with the single step only a human
+can take — it opens the dsh web panel, prints the tokenised URL, waits for
+Enter and detects the account. A new `account` command covers the rest of the
+lifecycle: which account is in use, switching accounts when the quota runs out,
+and recovering the sign-in URL when the browser tab is gone. Both are gated so
+a non-interactive terminal starts no server and opens no browser, and the URL
+is always printed as text for SSH and headless use.
+L24 (decision): a terminal UI was requested explicitly. It is deliberately
+dependency-free and degrades three ways: colour off when piped or `NO_COLOR`,
+ASCII glyphs on `TERM=dumb` or `--ascii`, and a width clamped to the terminal.
+The mark is a four-line arch, narrow enough for a split pane and a screen
+reader.
