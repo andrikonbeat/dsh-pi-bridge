@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/andrikonbeat/dsh-pi-bridge/security/advisories/new
+    about: Please report anything involving a credential privately.
+  - name: Setup question
+    url: https://github.com/andrikonbeat/dsh-pi-bridge/blob/main/docs/troubleshooting.md
+    about: Most setup problems are answered here, without spending API credit.

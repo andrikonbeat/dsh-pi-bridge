@@ -1,7 +1,7 @@
 {
   "name": "pi-dsh-bridge",
-  "version": "0.1.0",
-  "description": "Wire DeepSeek into Pi without losing Pi's tools, and install a working DeepSeek Harness (dsh) web launcher. Reversible, journaled, zero dependencies.",
+  "version": "0.2.0",
+  "description": "Pi and the dsh web interface, on one DeepSeek account. Switch accounts in the web panel and Pi follows. Zero dependencies, reversible, journaled.",
   "type": "module",
   "bin": {
     "pi-dsh-bridge": "bin/cli.js"
@@ -10,9 +10,12 @@
     "bin/",
     "src/",
     "assets/",
+    "docs/",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -23,12 +26,16 @@
   },
   "keywords": [
     "pi",
+    "pi-coding-agent",
     "gentle-shell",
     "deepseek",
-    "dsh",
     "deepseek-harness",
-    "cli"
+    "dsh",
+    "cli",
+    "account",
+    "tui"
   ],
+  "author": "andrikonbeat",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -37,5 +44,9 @@
   "homepage": "https://github.com/andrikonbeat/dsh-pi-bridge#readme",
   "bugs": {
     "url": "https://github.com/andrikonbeat/dsh-pi-bridge/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
   }
 }

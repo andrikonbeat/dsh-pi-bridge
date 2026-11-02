@@ -1,8 +1,17 @@
 # pi-dsh-bridge
 
-DeepSeek inside Pi / gentle-shell — keeping every Pi tool — plus a working
-DeepSeek Harness (`dsh`) web launcher. It installs reversibly, checks itself,
-and undoes what it changed.
+[![npm](https://img.shields.io/npm/v/pi-dsh-bridge.svg)](https://www.npmjs.com/package/pi-dsh-bridge)
+[![node](https://img.shields.io/node/v/pi-dsh-bridge.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/pi-dsh-bridge.svg)](LICENSE)
+[![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
+[![tests](https://img.shields.io/badge/tests-74%20passing-brightgreen.svg)](test)
+
+Pi and the DeepSeek Harness web interface, on **one DeepSeek account**. Switch
+accounts in the dsh web panel and Pi follows on its next start — no token to
+copy, no secret in a second file, nothing to restart.
+
+It installs reversibly, checks itself, and undoes exactly what it changed.
+Zero runtime dependencies.
 
 > **Name note.** This project is published on npm as **`pi-dsh-bridge`**. The
 > npm name `dsh-pi-bridge` belongs to an unrelated package, so the GitHub
@@ -233,6 +242,14 @@ npm run pack:check # what would actually be published
 
 The public command and flag names are a frozen contract: adding a command is a
 minor bump, changing or removing one is a major bump.
+
+## Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md)
+for the workflow, the test expectations and the review-size rule. Security
+reports go through [SECURITY.md](SECURITY.md) instead of the issue tracker.
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
 
 ## License
 
