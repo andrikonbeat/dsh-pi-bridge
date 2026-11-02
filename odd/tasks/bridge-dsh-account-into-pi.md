@@ -120,6 +120,7 @@ the usual ~400 authored lines:
 | `e5c4956` | the specification | 135 | the contract the work is measured against |
 | `596b409` | the implementation | ~1,460 | the provider, the grant parser, `sync`, `install`, `doctor`, `verify`, the two launchers and the tests are one coupled behaviour: splitting them would leave the suite red at the intermediate commits, because `install` writes the provider that `doctor` and `verify` then inspect |
 | `fc93605` | the documentation | 310 | reader-facing, reviewable on its own |
+| `5fd1c89` | the live-run fixes | 130 | two defects that only a real run could find: the account command composed wrongly, and the dsh launcher booted dsh with an invalid argument order |
 
 If this feature needs a pull request rather than a direct merge, it is a
 stacked delivery: the specification and the implementation first, the
@@ -208,3 +209,27 @@ candidate high risk with `reviewDue: true`; the receipt-driven review
 lifecycle was then not started, by explicit instruction. The independent
 verifier required by the risk tier still runs, because that requirement comes
 from the risk classification and not from RDD.
+L18 (bug, found by the live run, fixed in `5fd1c89`): the installed helper
+added `token --dsh-home <dir>` to the CLI, and the command recorded in
+`models.json` added the same arguments again. Pi therefore ran the CLI with a
+duplicated subcommand and every request failed with `Failed to resolve
+provider "deepseek" header "x-dsh-auth-token" from shell command`. The helper
+now passes its arguments through untouched, so the same command works whether
+it names the helper or the CLI. A test now runs the exact command Pi runs,
+through a shell, and asserts it produces the token: that coverage was the
+thing whose absence let the defect through.
+L19 (bug, found by the live run, fixed in `5fd1c89`): the dsh launcher passed
+`--patch` after the `web` shortcut and then repeated the profile, so dsh
+refused to boot (`unknown option '--patch'`, then `too many arguments`).
+dsh's grammar is `dsh [--profile] <name> [options] [app-args...]`; the
+launcher now names the profile explicitly and puts the app flags after the
+global options. dsh web boots again and the account route loads its model
+list: `[llm-deepseek-account] model listing from https://api.deepseek.com/models
+loaded 2 model(s)`.
+L20 (evidence, deployed on the real machine): `install` wired
+`~/.pi/agent/models.json`, installed `~/.local/bin/pi-dsh-token` and wrote
+the overlay. Real Pi answered `BRIDGE_OK` through the account route, the
+`pi-deepseek` launcher answered `LAUNCHER_OK`, and `doctor` reported every
+check green except the deliberate warning that a stored API key's balance is
+not checked offline. dsh web came back on the account route, with the
+Cloudflare block on the account dashboard reported once.
