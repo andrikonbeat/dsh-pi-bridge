@@ -18,6 +18,8 @@ import { describeRoute, diverges, probe } from '../dsh.js';
 import { accountGrantStatus } from '../dsh-account.js';
 import { applySharedProvider, loadModels, renderModels, sharedProvider } from '../models.js';
 import { renderHelper } from '../token-helper.js';
+import { ensureAccount } from '../onboarding.js';
+import { writeFileAtomic } from '../fs-atomic.js';
 import {
   JournalError,
   createBackupBatch,
@@ -26,6 +28,7 @@ import {
   readJournal,
   writeJournal,
 } from '../journal.js';
+import { packageVersion } from '../paths.js';
 
 const LAUNCHER_ASSET = 'start-web.sh';
 const WRAPPER_ASSET = 'pi-deepseek.sh';
@@ -114,23 +117,15 @@ function helperChange({ layout, cliPath }) {
 /**
  * Wire Pi's `models.json` to the shared account.
  *
- * Without a usable grant there is nothing to wire, and the file is left
- * exactly as it is: a broken bridge must never be worse than no bridge, and
- * the API-key route keeps working untouched.
+ * The provider is written whether or not a grant exists yet. The header is a
+ * command, not a token, so it is valid before sign-in: the moment the user
+ * signs in, the next Pi start already works. Skipping this when there is no
+ * grant was worse — Pi then fell back silently to its built-in `deepseek`
+ * provider, i.e. a different wallet, and the user saw a bare 402 with no hint.
  */
 function modelsChange({ layout, grant }) {
   const current = loadModels(layout.modelsPath);
   const onDisk = readIfExists(layout.modelsPath);
-  if (!grant.ok) {
-    return {
-      path: layout.modelsPath,
-      action: 'skipped',
-      kind: 'models',
-      fileMode: onDisk.exists ? onDisk.mode : MODELS_MODE,
-      bytes: null,
-      detail: `not wired: ${grant.error}`,
-    };
-  }
   const provider = sharedProvider({ program: layout.tokenHelperPath, dshHome: layout.dshHome });
   const { merged } = applySharedProvider(current.data, provider);
   const bytes = Buffer.from(renderModels(merged));
@@ -148,7 +143,9 @@ function modelsChange({ layout, grant }) {
     detail:
       action === 'unchanged'
         ? 'already up to date'
-        : 'deepseek provider -> shared dsh account (token read on demand)',
+        : grant.ok
+          ? 'deepseek provider -> shared dsh account (token read on demand)'
+          : 'deepseek provider wired; it reads the account once you sign in',
   };
 }
 
@@ -247,9 +244,11 @@ function journalSettings(prior, data, desired) {
   return { keys: Object.keys(desired), before: captureBefore(data, desired) };
 }
 
-export function install({ options = {}, ui, layout, env = process.env, cliPath }) {
+export async function install({ options = {}, ui, layout, env = process.env, cliPath }) {
   const provider = options.provider ?? DEFAULT_PROVIDER;
   const model = options.model ?? DEFAULT_MODEL;
+
+  if (!ui.json) ui.banner({ version: packageVersion() });
 
   const node = nodeCheck();
   if (node.status !== 'ok') {
@@ -321,8 +320,9 @@ export function install({ options = {}, ui, layout, env = process.env, cliPath }
       const current = readIfExists(change.path);
       const before = current.exists ? batch.backup(change.path) : null;
       fs.mkdirSync(path.dirname(change.path), { recursive: true });
-      fs.writeFileSync(change.path, change.bytes);
-      fs.chmodSync(change.path, change.fileMode);
+      // Atomic: Pi executes the token helper and parses models.json while it
+      // runs, so these files must never be observable half-written.
+      writeFileAtomic(change.path, change.bytes, { mode: change.fileMode });
       entries.push({
         path: change.path,
         before,
@@ -349,6 +349,40 @@ export function install({ options = {}, ui, layout, env = process.env, cliPath }
       ? `nothing to do: ${plan.length} path(s) already match (journal unchanged)`
       : `${changed.length} path(s) changed, journal at ${layout.journalPath}`,
   );
+
+  // Everything is on disk. What is left is the one step only the user can take:
+  // signing in to DeepSeek inside the dsh web panel. So do not hand them a
+  // to-do list — open the panel, hand over the URL and detect the account.
+  ui.blank();
+  const ready = accountGrantStatus(layout.credentialsPath);
+  if (ready.ok) {
+    ui.ok('account', `connected to ${ready.issuer ?? 'DeepSeek'}`);
+    ui.blank();
+    ui.rule();
+    ui.ok('ready', 'everything is wired');
+    ui.cmd('pi');
+  } else {
+    ui.warn('account', 'not connected yet — this is the only step left');
+    const result = await ensureAccount({
+      layout,
+      ui,
+      env,
+      cliPath,
+      open: options.open === true && options.noOpen !== true,
+      restart: false,
+      announce: false,
+    });
+    ui.blank();
+    ui.rule();
+    if (result.ok) {
+      ui.ok('ready', 'everything is wired');
+      ui.cmd('pi');
+    } else {
+      ui.aside('Pi is installed; it will ask for the account until you sign in.');
+      ui.cmd('pi-dsh-bridge account');
+    }
+  }
+  ui.blank();
 
   if (ui.json) {
     ui.emitJson({

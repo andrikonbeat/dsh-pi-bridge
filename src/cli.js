@@ -1,16 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { packageRoot, resolveLayout } from './paths.js';
+import { packageRoot, packageVersion, resolveLayout } from './paths.js';
 import { createUi } from './ui.js';
 import { DOCTOR_HELP, doctor } from './commands/doctor.js';
 import { INSTALL_HELP, install } from './commands/install.js';
 import { UNINSTALL_HELP, uninstall } from './commands/uninstall.js';
 import { VERIFY_HELP, verify } from './commands/verify.js';
 import { SYNC_HELP, TOKEN_HELP, sync, token } from './commands/sync.js';
+import { ACCOUNT_HELP, account } from './commands/account.js';
 
 const COMMANDS = new Map([
   ['install', { help: INSTALL_HELP, run: install }],
+  ['account', { help: ACCOUNT_HELP, run: account }],
   ['uninstall', { help: UNINSTALL_HELP, run: uninstall }],
   ['doctor', { help: DOCTOR_HELP, run: doctor }],
   ['verify', { help: VERIFY_HELP, run: verify }],
@@ -29,6 +31,12 @@ const VALUE_FLAGS = new Map([
 
 const BOOLEAN_FLAGS = new Map([
   ['--check', 'check'],
+  ['--relogin', 'relogin'],
+  ['--restart', 'restart'],
+  ['--open', 'open'],
+  ['--no-open', 'noOpen'],
+  ['--no-color', 'noColor'],
+  ['--ascii', 'ascii'],
   ['--dry-run', 'dryRun'],
   ['-y', 'yes'],
   ['--yes', 'yes'],
@@ -42,18 +50,21 @@ const BOOLEAN_FLAGS = new Map([
 export const GLOBAL_USAGE = `Usage: pi-dsh-bridge <command> [options]
 
 Commands:
-  install     wire DeepSeek into Pi and install the dsh web launcher
+  install     wire DeepSeek into Pi and connect your account
+  account     show or switch the DeepSeek account Pi uses
   doctor      cheap, offline health check (never spends API credit)
   verify      end-to-end check; requires --yes (spends API credit)
   uninstall   restore exactly what install changed
-  sync        point Pi at the DeepSeek account the dsh web interface uses
+  sync        re-wire Pi to the account (install does this for you)
   token       print the account token (called by Pi; --check to test it)
   help        usage
 
 Options:
   --dry-run            print the planned changes and write nothing
   -y, --yes            do not ask for confirmation
-  --json               machine-readable output (doctor, install)
+  --json               machine-readable output
+  --no-color           plain output, no ANSI colour
+  --ascii              ASCII glyphs only (no box drawing, no symbols)
   --pi-home <dir>      default $PI_CODING_AGENT_DIR or ~/.pi/agent
   --dsh-home <dir>     default $DSH_HOME or ~/.dsh
   --bin-dir <dir>      default $BIN_DIR or ~/.local/bin
@@ -65,10 +76,7 @@ Options:
 
 Exit codes: 0 ok, 1 check failed, 2 usage error.`;
 
-export function packageVersion() {
-  const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot(), 'package.json'), 'utf8'));
-  return manifest.version;
-}
+export { packageVersion } from './paths.js';
 
 /** Argument parsing only: no filesystem access, no side effects. */
 export function parseArgv(argv = []) {
@@ -142,7 +150,15 @@ function helpFor(command) {
 export async function main(argv = process.argv.slice(2), io = {}) {
   const env = io.env ?? process.env;
   const { command, options, error } = parseArgv(argv);
-  const ui = createUi({ json: options.json === true, stdout: io.stdout, stderr: io.stderr, env });
+  const ui = createUi({
+    json: options.json === true,
+    stdout: io.stdout,
+    stderr: io.stderr,
+    stdin: io.stdin,
+    env,
+    color: options.noColor === true ? false : undefined,
+    unicode: options.ascii === true ? false : undefined,
+  });
 
   if (error) {
     ui.error(error);

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,12 @@ export function packageRoot() {
 
 export function assetPath(name) {
   return path.join(packageRoot(), 'assets', name);
+}
+
+/** The version this CLI reports. Read from the manifest, never hardcoded. */
+export function packageVersion() {
+  const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot(), 'package.json'), 'utf8'));
+  return manifest.version;
 }
 
 function expandTilde(value, home) {

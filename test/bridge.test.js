@@ -225,13 +225,31 @@ describe('the shared-account bridge', () => {
     }
   });
 
-  it('install leaves models.json alone when there is no usable grant', () => {
+  it('install wires the provider even before sign-in, so signing in is enough', () => {
     const box = createSandbox();
     try {
       const original = `${JSON.stringify({ providers: {} }, null, 2)}\n`;
       fs.writeFileSync(modelsPath(box), original);
+
+      // No DeepSeek credentials on purpose: the provider is a command, not a
+      // token, so it is valid before the user signs in. Skipping it would make
+      // Pi fall back silently to its built-in provider — a different wallet.
       assert.equal(run(['install', '--yes'], box).status, 0);
-      assert.equal(fs.readFileSync(modelsPath(box), 'utf8'), original);
+      const provider = providerOf(box);
+      assert.ok(provider, 'the deepseek provider is written without a grant');
+      assert.ok(provider.headers['x-dsh-auth-token'].startsWith('!'));
+      assert.notEqual(fs.readFileSync(modelsPath(box), 'utf8'), original);
+
+      // And the moment the account appears, the wiring already works.
+      writeCredentials(box);
+      const result = spawnSync('/bin/sh', ['-c', provider.headers['x-dsh-auth-token'].slice(1)], {
+        encoding: 'utf8',
+        env: sandboxEnv(box, {
+          PATH: `${box.fakebin}:${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+        }),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), TOKEN);
     } finally {
       cleanupSandbox(box);
     }

@@ -1,8 +1,7 @@
-import fs from 'node:fs';
-
 import { accountGrantStatus, grantState, readAccountGrant } from '../dsh-account.js';
 import { applySharedProvider, loadModels, renderModels, sharedProvider } from '../models.js';
 import { tokenProgram } from '../token-helper.js';
+import { writeFileAtomic } from '../fs-atomic.js';
 import {
   JournalError,
   createBackupBatch,
@@ -57,6 +56,46 @@ export function token({ options = {}, ui, layout, env = process.env }) {
 }
 
 /**
+ * Compute the provider entry and the bytes it implies, without writing.
+ *
+ * Shared by `sync`, `install` and `account` so that there is exactly one
+ * implementation of "what the provider looks like". The token itself is never
+ * written anywhere: the file records only the command that fetches it.
+ */
+export function wireSharedProvider({ layout, cliPath }) {
+  const program = tokenProgram({ layout, cliPath });
+  const provider = sharedProvider({ program, dshHome: layout.dshHome });
+  const current = loadModels(layout.modelsPath);
+  const { merged } = applySharedProvider(current.data, provider);
+  const rendered = Buffer.from(renderModels(merged));
+  const changed = !(current.exists && current.raw.equals(rendered));
+  return { changed, modelsPath: layout.modelsPath, provider, rendered, current };
+}
+
+/**
+ * Write the shared provider, recording the prior bytes in the journal once.
+ *
+ * The journal keeps the first copy of the file it ever saw, so `uninstall`
+ * restores the `models.json` that existed before the bridge touched it, byte
+ * for byte.
+ */
+export function persistSharedProvider({ layout, plan, journal }) {
+  const batch = createBackupBatch({ backupsDir: layout.backupsDir });
+  const before = plan.current.exists ? batch.backup(plan.modelsPath) : null;
+
+  // Atomic: Pi may be starting while this runs, and a truncated models.json
+  // would make it fail to parse its own configuration.
+  writeFileAtomic(plan.modelsPath, plan.rendered, { mode: 0o644 });
+
+  const entries = [{ path: plan.modelsPath, before, after: 'file-copy' }];
+  const next = journal
+    ? { ...journal, entries: mergeEntries(journal, entries) }
+    : createJournal({ versions: {} });
+  if (!journal) next.entries = mergeEntries(next, entries);
+  writeJournal(layout.journalPath, next);
+}
+
+/**
  * Wire Pi's `models.json` to the shared DeepSeek account.
  *
  * The token itself is never written anywhere: the file records only the
@@ -64,59 +103,53 @@ export function token({ options = {}, ui, layout, env = process.env }) {
  * the file already says what it should.
  */
 export function sync({ options = {}, ui, layout, env = process.env, cliPath }) {
-  const modelsPath = layout.modelsPath;
   const grant = accountGrantStatus(layout.credentialsPath);
 
   if (!grant.ok) {
     ui.error(grant.error);
-    ui.line('  the API-key route is untouched, so Pi still works with a stored deepseek key');
-    ui.line('  sign in to DeepSeek in the dsh web interface, then run "pi-dsh-bridge sync" again');
+    ui.aside('the API-key route is untouched, so Pi still works with a stored deepseek key');
+    ui.aside('sign in to DeepSeek in the dsh web interface, then run "pi-dsh-bridge sync" again');
+    ui.aside('or run "pi-dsh-bridge account", which opens the panel for you');
     return 1;
   }
 
-  const program = tokenProgram({ layout, cliPath });
-  const provider = sharedProvider({ program, dshHome: layout.dshHome });
-
-  let current;
+  let plan;
   try {
-    current = loadModels(modelsPath);
+    plan = wireSharedProvider({ layout, cliPath });
   } catch (error) {
     ui.error(error.message);
     return 1;
   }
 
-  const { merged } = applySharedProvider(current.data, provider);
-  const rendered = Buffer.from(renderModels(merged));
-  const unchanged = current.exists && current.raw.equals(rendered);
-  const command = provider.headers['x-dsh-auth-token'];
+  const command = plan.provider.headers['x-dsh-auth-token'];
 
   if (options.dryRun) {
     ui.line('sync plan (dry run: nothing is written)');
-    ui.line(`  ${unchanged ? 'unchanged' : 'updated  '} ${modelsPath}  deepseek provider -> shared account`);
+    ui.line(`  ${plan.changed ? 'updated  ' : 'unchanged'} ${plan.modelsPath}  deepseek provider -> shared account`);
     ui.line(`  header    ${command}`);
     if (ui.json) {
       ui.emitJson({
         command: 'sync',
         ok: true,
         dryRun: true,
-        modelsPath,
-        changed: !unchanged,
+        modelsPath: plan.modelsPath,
+        changed: plan.changed,
         issuer: grant.issuer,
       });
     }
     return 0;
   }
 
-  if (unchanged) {
+  if (!plan.changed) {
     ui.line('sync');
-    ui.line(`  unchanged ${modelsPath}  deepseek provider -> shared account`);
+    ui.line(`  unchanged ${plan.modelsPath}  deepseek provider -> shared account`);
     ui.line(`  account   ${grant.issuer ?? 'deepseek account'} (token read on demand, never stored here)`);
     if (ui.json) {
       ui.emitJson({
         command: 'sync',
         ok: true,
         dryRun: false,
-        modelsPath,
+        modelsPath: plan.modelsPath,
         changed: false,
         issuer: grant.issuer,
       });
@@ -124,9 +157,6 @@ export function sync({ options = {}, ui, layout, env = process.env, cliPath }) {
     return 0;
   }
 
-  // The journal keeps the first copy of the file it ever saw, so uninstall
-  // restores the models.json that existed before the bridge touched it, byte
-  // for byte.
   let journal;
   try {
     journal = readJournal(layout.journalPath);
@@ -138,21 +168,10 @@ export function sync({ options = {}, ui, layout, env = process.env, cliPath }) {
     throw error;
   }
 
-  const batch = createBackupBatch({ backupsDir: layout.backupsDir });
-  const before = current.exists ? batch.backup(modelsPath) : null;
-
-  fs.mkdirSync(layout.piHome, { recursive: true });
-  fs.writeFileSync(modelsPath, rendered);
-
-  const entries = [{ path: modelsPath, before, after: 'file-copy' }];
-  const next = journal
-    ? { ...journal, entries: mergeEntries(journal, entries) }
-    : createJournal({ versions: {} });
-  if (!journal) next.entries = mergeEntries(next, entries);
-  writeJournal(layout.journalPath, next);
+  persistSharedProvider({ layout, plan, journal });
 
   ui.line('sync');
-  ui.line(`  updated  ${modelsPath}  deepseek provider -> shared account`);
+  ui.line(`  updated  ${plan.modelsPath}  deepseek provider -> shared account`);
   ui.line(`  header    ${command}`);
   ui.line(`  account   ${grant.issuer ?? 'deepseek account'} (token read on demand, never stored here)`);
 
@@ -161,7 +180,7 @@ export function sync({ options = {}, ui, layout, env = process.env, cliPath }) {
       command: 'sync',
       ok: true,
       dryRun: false,
-      modelsPath,
+      modelsPath: plan.modelsPath,
       changed: true,
       issuer: grant.issuer,
     });
@@ -171,11 +190,11 @@ export function sync({ options = {}, ui, layout, env = process.env, cliPath }) {
 
 export const SYNC_HELP = `Usage: pi-dsh-bridge sync [options]
 
-Point Pi at the DeepSeek account that the dsh web interface uses.
+Re-wire Pi to the DeepSeek account the dsh web interface uses.
 
-The account token is never written to a file: Pi fetches it on demand through
-a command, so signing in to a different account in the dsh web interface
-changes the account Pi uses on its next start.
+You rarely need this: "install" does it, and "account" does it after you switch
+accounts. The account token is never written to a file — Pi fetches it on
+demand through a command.
 
   --dry-run            print the plan and change nothing
   -y, --yes            do not ask for confirmation
