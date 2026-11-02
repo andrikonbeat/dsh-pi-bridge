@@ -55,16 +55,25 @@ jobs:
         run: |
           npm pack --dry-run --json > pack.json
           node -e '
-            const pack = require("./pack.json")[0];
+            // npm 11 and later key the document by package name; npm 10 and
+            // earlier return an array. Accept both, or this check becomes a
+            // silent victim of whichever npm the runner happens to ship.
+            const raw = require("./pack.json");
+            const pack = Array.isArray(raw) ? raw[0] : Object.values(raw)[0];
             const names = pack.files.map((f) => f.path);
-            const required = ["bin/cli.js", "package.json", "README.md", "LICENSE", "CHANGELOG.md"];
-            const forbidden = [/^\.atl\//, /^backups\//, /^odd\//, /^test\//, /^docs\//,
-                               /^\.github\//, /skill-registry/, /\.log$/];
+            const required = ["bin/cli.js", "package.json", "README.md", "LICENSE", "CHANGELOG.md",
+                              "SECURITY.md", "docs/troubleshooting.md"];
+            // Documentation ships on purpose; working notes, tests and CI do not.
+            const forbidden = [/^\.atl\//, /^backups\//, /^odd\//, /^test\//,
+                               /^\.github\//, /skill-registry/, /\.log$/,
+                               /\.credentials/, /(^|\/)auth\.json$/, /\.tgz$/];
             const missing = required.filter((p) => !names.includes(p));
             const leaked = names.filter((p) => forbidden.some((re) => re.test(p)));
             if (missing.length) { console.error("missing from tarball:", missing); process.exitCode = 1; }
             if (leaked.length)  { console.error("private paths leaked into the tarball:", leaked); process.exitCode = 1; }
-            console.log(`tarball: ${names.length} files, ${pack.size} bytes packed`);
+            if (!missing.length && !leaked.length) {
+              console.log(`tarball: ${names.length} files, ${pack.size} bytes packed, nothing private`);
+            }
           '
 
   scripts:
@@ -74,12 +83,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Syntax check
         run: |
-          for f in install.sh verify.sh uninstall.sh bin/pi-deepseek dsh/start-web.sh assets/pi-deepseek.sh; do
+          shopt -s nullglob
+          files=(install.sh verify.sh uninstall.sh bin/pi-deepseek dsh/start-web.sh assets/*.sh)
+          for f in "${files[@]}"; do
             [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
             bash -n "$f" && echo "ok: $f"
           done
       - name: ShellCheck
-        run: shellcheck --severity=warning install.sh verify.sh uninstall.sh bin/pi-deepseek dsh/start-web.sh
+        run: |
+          shopt -s nullglob
+          files=(install.sh verify.sh uninstall.sh bin/pi-deepseek dsh/start-web.sh assets/*.sh)
+          shellcheck --severity=warning "${files[@]}"
 
   repository-hygiene:
     name: no private artifacts in git

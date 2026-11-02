@@ -12,7 +12,10 @@
 set -euo pipefail
 
 # vision-git's shim was uninstalled; keep it out of PATH if a stale entry survives.
-export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v 'vision-git/shim' | paste -sd:)"
+# `grep -v` exits 1 when it filters nothing, which under `pipefail` would abort
+# the launcher on a machine that never had the shim.
+clean_path="$(printf '%s' "$PATH" | tr ':' '\n' | { grep -v 'vision-git/shim' || true; } | paste -sd:)"
+export PATH="$clean_path"
 
 # Pi reads its own home from PI_CODING_AGENT_DIR. PI_HOME stays as an alias.
 PI_HOME_DIR="${PI_CODING_AGENT_DIR:-${PI_HOME:-$HOME/.pi/agent}}"
