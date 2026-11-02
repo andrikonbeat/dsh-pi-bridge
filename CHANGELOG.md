@@ -6,6 +6,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `pi-dsh-bridge account` — show which DeepSeek account Pi is using, switch to
+  another one when the quota runs out, and recover the dsh web sign-in URL when
+  the browser tab is gone.
+- `install` now finishes the job: it opens the dsh web panel, hands over the
+  tokenised sign-in URL, waits for Enter and detects the account by itself. On a
+  non-interactive terminal it starts nothing and prints the one command to run
+  later.
+- A terminal UI: a four-line arch as the mark, colour, boxed prompts and
+  numbered steps, degrading to plain ASCII when piped, on `TERM=dumb`, or with
+  `--no-color` / `--ascii`.
+
+### Fixed
+
+- Files that other processes read while they run — the token helper and
+  `models.json` — are now written atomically. Writing them in place truncated
+  the file first, so a Pi request that landed in that window failed with
+  `Failed to resolve provider "deepseek" header "x-dsh-auth-token"` even though
+  the bridge was healthy.
+
+### Changed
+
+- The shared provider is written whether or not an account exists yet, so
+  signing in is enough. Previously, installing before signing in left Pi on its
+  built-in `deepseek` provider — a different wallet — and the failure surfaced
+  as a bare `402`.
+
+### Added
+
+- The shared-account bridge: Pi now spends the same DeepSeek account as the
+  dsh web interface. Pi's `models.json` gets a `deepseek` provider whose
+  `x-dsh-auth-token` header is a *command* that reads the dsh account grant on
+  demand. The token is never written into a second file, and signing in to a
+  different account in the dsh web interface changes the account Pi spends on
+  its next start.
+- `pi-dsh-bridge sync` — wire Pi to the account the dsh web interface is
+  signed in to. Idempotent, journaled, reversible, `--dry-run` supported.
+- `pi-dsh-bridge token` — the command Pi itself calls. `--check` reports
+  whether the grant is usable without printing anything.
+- `doctor` now reports three states for every credential — absent, present but
+  unusable, usable — and checks that Pi is actually wired to the shared
+  account, not merely that a credential exists.
+- `verify` now exercises the shared account route and reports the balance of
+  both wallets, so it is visible which one Pi is spending.
+
+### Changed
+
+- The dsh web route is now `deepseek-account` (the account wallet) instead of
+  `deepseek-official` (the API-key wallet), so dsh and Pi spend the same
+  money instead of two different ones.
+- `install` writes Pi's `models.json` and installs the `pi-dsh-token` helper;
+  `uninstall` restores the previous `models.json` byte for byte.
+- The Pi home is resolved from `PI_CODING_AGENT_DIR`, the variable Pi itself
+  reads. `PI_HOME` stays supported as an alias.
+- `doctor` no longer reports a merely present API key as healthy: presence is
+  not working, and only `verify` can prove a balance.
+
 ## [0.1.0]
 
 First released version. The package turns a personal shell-script setup recipe

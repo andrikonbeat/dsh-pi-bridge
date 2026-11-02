@@ -15,6 +15,11 @@ import {
   renderSettings,
 } from '../settings.js';
 import { describeRoute, diverges, probe } from '../dsh.js';
+import { accountGrantStatus } from '../dsh-account.js';
+import { applySharedProvider, loadModels, renderModels, sharedProvider } from '../models.js';
+import { renderHelper } from '../token-helper.js';
+import { ensureAccount } from '../onboarding.js';
+import { writeFileAtomic } from '../fs-atomic.js';
 import {
   JournalError,
   createBackupBatch,
@@ -23,6 +28,7 @@ import {
   readJournal,
   writeJournal,
 } from '../journal.js';
+import { packageVersion } from '../paths.js';
 
 const LAUNCHER_ASSET = 'start-web.sh';
 const WRAPPER_ASSET = 'pi-deepseek.sh';
@@ -31,6 +37,7 @@ const OVERLAY_ASSET = 'dsh-overlay.yml';
 const FILE_MODE = 0o755;
 const SETTINGS_MODE = 0o644;
 const OVERLAY_MODE = 0o644;
+const MODELS_MODE = 0o644;
 
 function readIfExists(file) {
   try {
@@ -68,6 +75,80 @@ function fileChange({ file, asset, mode, kind = 'file', detail = '' }) {
   };
 }
 
+/** A file whose content is computed rather than copied from an asset. */
+function contentChange({ file, bytes, mode, kind = 'file', detail = '' }) {
+  const current = readIfExists(file);
+  if (!current.exists) {
+    return { path: file, action: 'created', kind, fileMode: mode, bytes, detail: detail || 'new file' };
+  }
+  const identical = sameBytes(current.bytes, bytes);
+  const modeOk = current.mode === mode;
+  if (identical && modeOk) {
+    return { path: file, action: 'unchanged', kind, fileMode: mode, bytes, detail: 'already up to date' };
+  }
+  return {
+    path: file,
+    action: 'updated',
+    kind,
+    fileMode: mode,
+    bytes,
+    detail: identical ? `mode ${current.mode.toString(8)} -> ${mode.toString(8)}` : 'content differs',
+  };
+}
+
+/**
+ * The helper Pi calls to obtain the token.
+ *
+ * It lives in the bin directory on purpose: the path recorded in
+ * `models.json` must survive an `npx` cache clean and a package upgrade,
+ * which a path inside a package directory would not.
+ */
+function helperChange({ layout, cliPath }) {
+  const bytes = Buffer.from(renderHelper({ cliPath }));
+  return contentChange({
+    file: layout.tokenHelperPath,
+    bytes,
+    mode: FILE_MODE,
+    kind: 'file',
+    detail: 'pi-dsh-token helper (fetches the account token on demand)',
+  });
+}
+
+/**
+ * Wire Pi's `models.json` to the shared account.
+ *
+ * The provider is written whether or not a grant exists yet. The header is a
+ * command, not a token, so it is valid before sign-in: the moment the user
+ * signs in, the next Pi start already works. Skipping this when there is no
+ * grant was worse — Pi then fell back silently to its built-in `deepseek`
+ * provider, i.e. a different wallet, and the user saw a bare 402 with no hint.
+ */
+function modelsChange({ layout, grant }) {
+  const current = loadModels(layout.modelsPath);
+  const onDisk = readIfExists(layout.modelsPath);
+  const provider = sharedProvider({ program: layout.tokenHelperPath, dshHome: layout.dshHome });
+  const { merged } = applySharedProvider(current.data, provider);
+  const bytes = Buffer.from(renderModels(merged));
+  const action = !current.exists
+    ? 'created'
+    : sameBytes(current.raw, bytes)
+      ? 'unchanged'
+      : 'updated';
+  return {
+    path: layout.modelsPath,
+    action,
+    kind: 'models',
+    fileMode: onDisk.exists ? onDisk.mode : MODELS_MODE,
+    bytes,
+    detail:
+      action === 'unchanged'
+        ? 'already up to date'
+        : grant.ok
+          ? 'deepseek provider -> shared dsh account (token read on demand)'
+          : 'deepseek provider wired; it reads the account once you sign in',
+  };
+}
+
 function settingsChange({ layout, provider, model }) {
   const current = loadSettings(layout.settingsPath);
   const onDisk = readIfExists(layout.settingsPath);
@@ -79,13 +160,18 @@ function settingsChange({ layout, provider, model }) {
     : sameBytes(current.raw, rendered)
       ? 'unchanged'
       : 'updated';
+  // Only the keys that actually change belong in the plan: listing every
+  // managed key makes a no-op install look like it rewrote the file.
+  const changedKeys = Object.keys(desired).filter(
+    (key) => !current.data || current.data[key] !== desired[key],
+  );
   return {
     path: layout.settingsPath,
     action,
     kind: 'settings',
     fileMode: onDisk.exists ? onDisk.mode : SETTINGS_MODE,
     bytes: Buffer.from(rendered),
-    detail: action === 'unchanged' ? 'already up to date' : Object.keys(desired).join(', '),
+    detail: action === 'unchanged' ? 'already up to date' : changedKeys.join(', '),
     current,
     desired,
   };
@@ -136,11 +222,13 @@ function overlayChange({ layout, dshPath, env, warnings }) {
   return change;
 }
 
-function planChanges({ layout, provider, model, dshPath, env, warnings }) {
+function planChanges({ layout, provider, model, dshPath, env, warnings, grant, cliPath }) {
   return [
     settingsChange({ layout, provider, model }),
     fileChange({ file: layout.launcherPath, asset: LAUNCHER_ASSET, mode: FILE_MODE }),
     fileChange({ file: layout.wrapperPath, asset: WRAPPER_ASSET, mode: FILE_MODE }),
+    helperChange({ layout, cliPath }),
+    modelsChange({ layout, grant }),
     overlayChange({ layout, dshPath, env, warnings }),
   ];
 }
@@ -156,9 +244,11 @@ function journalSettings(prior, data, desired) {
   return { keys: Object.keys(desired), before: captureBefore(data, desired) };
 }
 
-export function install({ options = {}, ui, layout, env = process.env }) {
+export async function install({ options = {}, ui, layout, env = process.env, cliPath }) {
   const provider = options.provider ?? DEFAULT_PROVIDER;
   const model = options.model ?? DEFAULT_MODEL;
+
+  if (!ui.json) ui.banner({ version: packageVersion() });
 
   const node = nodeCheck();
   if (node.status !== 'ok') {
@@ -192,6 +282,8 @@ export function install({ options = {}, ui, layout, env = process.env }) {
       dshPath: facts.dsh.found ? facts.dsh.path : null,
       env,
       warnings,
+      grant: accountGrantStatus(layout.credentialsPath),
+      cliPath,
     });
   } catch (error) {
     ui.error(error.message);
@@ -228,8 +320,9 @@ export function install({ options = {}, ui, layout, env = process.env }) {
       const current = readIfExists(change.path);
       const before = current.exists ? batch.backup(change.path) : null;
       fs.mkdirSync(path.dirname(change.path), { recursive: true });
-      fs.writeFileSync(change.path, change.bytes);
-      fs.chmodSync(change.path, change.fileMode);
+      // Atomic: Pi executes the token helper and parses models.json while it
+      // runs, so these files must never be observable half-written.
+      writeFileAtomic(change.path, change.bytes, { mode: change.fileMode });
       entries.push({
         path: change.path,
         before,
@@ -257,6 +350,40 @@ export function install({ options = {}, ui, layout, env = process.env }) {
       : `${changed.length} path(s) changed, journal at ${layout.journalPath}`,
   );
 
+  // Everything is on disk. What is left is the one step only the user can take:
+  // signing in to DeepSeek inside the dsh web panel. So do not hand them a
+  // to-do list — open the panel, hand over the URL and detect the account.
+  ui.blank();
+  const ready = accountGrantStatus(layout.credentialsPath);
+  if (ready.ok) {
+    ui.ok('account', `connected to ${ready.issuer ?? 'DeepSeek'}`);
+    ui.blank();
+    ui.rule();
+    ui.ok('ready', 'everything is wired');
+    ui.cmd('pi');
+  } else {
+    ui.warn('account', 'not connected yet — this is the only step left');
+    const result = await ensureAccount({
+      layout,
+      ui,
+      env,
+      cliPath,
+      open: options.open === true && options.noOpen !== true,
+      restart: false,
+      announce: false,
+    });
+    ui.blank();
+    ui.rule();
+    if (result.ok) {
+      ui.ok('ready', 'everything is wired');
+      ui.cmd('pi');
+    } else {
+      ui.aside('Pi is installed; it will ask for the account until you sign in.');
+      ui.cmd('pi-dsh-bridge account');
+    }
+  }
+  ui.blank();
+
   if (ui.json) {
     ui.emitJson({
       command: 'install',
@@ -279,7 +406,7 @@ Wire DeepSeek into Pi and install the dsh web launcher.
   --dry-run            print the planned changes and write nothing
   -y, --yes            do not ask for confirmation
   --json               machine-readable output
-  --pi-home <dir>      default $PI_HOME or ~/.pi/agent
+  --pi-home <dir>      default $PI_CODING_AGENT_DIR or ~/.pi/agent
   --dsh-home <dir>     default $DSH_HOME or ~/.dsh
   --bin-dir <dir>      default $BIN_DIR or ~/.local/bin
   --state-dir <dir>    default $STATE_DIR or ~/.local/state/pi-dsh-bridge

@@ -179,21 +179,21 @@ describe('install', () => {
     const box = createSandbox();
     try {
       const result = run(['install', '--yes'], box, {
-        env: { FAKE_DSH_PROVIDER: 'deepseek-account', FAKE_DSH_MODEL: 'deepseek-v4' },
+        env: { FAKE_DSH_PROVIDER: 'deepseek-official', FAKE_DSH_MODEL: 'deepseek-v4' },
       });
       assert.equal(result.status, 0, result.stderr);
       assert.ok(fs.existsSync(overlayPath(box)), 'overlay written on divergence');
 
       const overlay = fs.readFileSync(overlayPath(box), 'utf8');
       assert.match(overlay, /id: agent-default-model/);
-      assert.match(overlay, /provider: deepseek-official/);
+      assert.match(overlay, /provider: deepseek-account/);
       assert.match(overlay, /model: deepseek-flash/);
 
       const journal = readJson(journalPath(box));
       assert.ok(journal.entries.some((entry) => entry.path === overlayPath(box)));
 
       const second = run(['install', '--yes'], box, {
-        env: { FAKE_DSH_PROVIDER: 'deepseek-account', FAKE_DSH_MODEL: 'deepseek-v4' },
+        env: { FAKE_DSH_PROVIDER: 'deepseek-official', FAKE_DSH_MODEL: 'deepseek-v4' },
       });
       assert.equal(second.status, 0, second.stderr);
       assert.match(second.stdout, /unchanged/);

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { JournalError, readJournal } from '../journal.js';
+import { writeFileAtomic } from '../fs-atomic.js';
 
 function readIfExists(file) {
   try {
@@ -98,8 +99,9 @@ export function uninstall({ options = {}, ui, layout }) {
     if (item.action === 'delete') {
       fs.rmSync(item.path, { force: true });
     } else if (item.action === 'restore') {
-      fs.mkdirSync(path.dirname(item.path), { recursive: true });
-      fs.writeFileSync(item.path, item.bytes, { mode: item.mode });
+      // Atomic, and the mode is applied on the temporary file, so the restored
+      // bytes and the restored permissions become visible together.
+      writeFileAtomic(item.path, item.bytes, { mode: item.mode });
       // writeFileSync only applies `mode` on creation; restore the prior mode
       // even when the file survived, because install may have changed it.
       fs.chmodSync(item.path, item.mode);
@@ -140,7 +142,7 @@ Restore exactly what install changed, and nothing else.
   --dry-run            print the plan and change nothing
   -y, --yes            do not ask for confirmation
   --json               machine-readable output
-  --pi-home <dir>      default $PI_HOME or ~/.pi/agent
+  --pi-home <dir>      default $PI_CODING_AGENT_DIR or ~/.pi/agent
   --dsh-home <dir>     default $DSH_HOME or ~/.dsh
   --bin-dir <dir>      default $BIN_DIR or ~/.local/bin
   --state-dir <dir>    default $STATE_DIR or ~/.local/state/pi-dsh-bridge

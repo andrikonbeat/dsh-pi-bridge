@@ -27,6 +27,34 @@ set -euo pipefail
 PROVIDER="${PI_DEEPSEEK_PROVIDER:-deepseek}"
 MODEL="${PI_DEEPSEEK_MODEL:-deepseek-flash}"
 
+# Resolve the account credential fresh, on every start.
+#
+# The token itself is never read here: Pi fetches it on demand through the
+# command recorded in models.json, so switching accounts in the dsh web
+# interface changes the account Pi spends on the next start.
+#
+# This check only asks whether that route is usable. Without it, a signed-out
+# or half-written credential surfaces as a 401 from DeepSeek with no hint of
+# what went wrong.
+HELPER="$(dirname "$0")/pi-dsh-token"
+DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+if [ -x "$HELPER" ]; then
+  TOKEN_CHECK=("$HELPER" token --check --dsh-home "$DSH_HOME_DIR")
+elif command -v pi-dsh-bridge >/dev/null 2>&1; then
+  TOKEN_CHECK=(pi-dsh-bridge token --check --dsh-home "$DSH_HOME_DIR")
+else
+  TOKEN_CHECK=()
+fi
+
+if [ "${#TOKEN_CHECK[@]}" -gt 0 ]; then
+  if ! "${TOKEN_CHECK[@]}" >/dev/null 2>&1; then
+    echo "ERROR: the dsh DeepSeek account credential is not usable." >&2
+    echo "  Sign in to DeepSeek in the dsh web interface, then run: pi-dsh-bridge sync" >&2
+    echo "  Pi reads the token on demand, so there is nothing else to change." >&2
+    exit 1
+  fi
+fi
+
 FLAGS=(--provider "$PROVIDER" --model "$MODEL")
 if [ "${PI_DEEPSEEK_FULL_STARTUP:-0}" != "1" ]; then
   FLAGS+=(--no-skill-registry)

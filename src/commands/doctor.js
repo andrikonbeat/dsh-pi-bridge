@@ -6,6 +6,11 @@ import { checkDshVersion } from '../compat.js';
 import { describeRoute, diverges, probe } from '../dsh.js';
 import { nodeCheck, preflight } from '../preflight.js';
 import { loadSettings, settingsMismatch } from '../settings.js';
+import { grantState } from '../dsh-account.js';
+import { readStoredApiKey } from '../pi-auth.js';
+import { ACCOUNT_TOKEN_HEADER, SHARED_PROVIDER_ID } from '../bridge-protocol.js';
+import { isSharedProvider, loadModels, programFromCommand } from '../models.js';
+import { tokenProgram } from '../token-helper.js';
 import { JournalError, readJournal } from '../journal.js';
 
 function readIfExists(file) {
@@ -52,30 +57,124 @@ function checkWritable(dir) {
   }
 }
 
+/**
+ * The stored DeepSeek API key: the fallback route.
+ *
+ * Three states, never two. A key that is merely present is reported as
+ * present and *not* as working, because a key on an account with no credit
+ * is present and fails every request with 402. Only `verify`, which talks to
+ * the API, can prove the balance.
+ */
 function credentialCheck(authPath, env) {
   if (typeof env.DEEPSEEK_API_KEY === 'string' && env.DEEPSEEK_API_KEY.length > 0) {
-    return { status: 'ok', detail: 'present in the environment (DEEPSEEK_API_KEY)' };
-  }
-  const info = readIfExists(authPath);
-  if (!info.exists) {
     return {
       status: 'warn',
-      detail: `no DeepSeek credential found (${authPath} is missing); run: pi auth login --provider deepseek`,
+      detail:
+        'present in the environment (DEEPSEEK_API_KEY); balance not checked offline — a key with ' +
+        'no credit fails every request (402). Run: pi-dsh-bridge verify --yes',
     };
   }
-  let data;
-  try {
-    data = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-  } catch {
-    return { status: 'warn', detail: `${authPath} does not parse as JSON` };
+  const stored = readStoredApiKey(authPath);
+  if (stored.state === 'absent') {
+    return {
+      status: 'warn',
+      detail: `${stored.detail}; the API-key fallback route is unavailable. Run: pi auth login --provider deepseek`,
+    };
   }
-  const entry = data?.deepseek ?? data?.['deepseek-official'];
-  const key = entry?.key ?? entry?.apiKey ?? entry?.access_token;
-  const present = typeof key === 'string' && key.length > 0;
-  // Presence only. A credential value is never read into any output.
-  return present
-    ? { status: 'ok', detail: `present in ${authPath}` }
-    : { status: 'warn', detail: `no DeepSeek key in ${authPath}; run: pi auth login --provider deepseek` };
+  if (stored.state === 'unusable') {
+    return { status: 'warn', detail: `${stored.detail}; the API-key fallback route is unavailable` };
+  }
+  return {
+    status: 'warn',
+    detail:
+      `${stored.detail}; balance not checked offline — a key with no credit fails every request ` +
+      '(402). Run: pi-dsh-bridge verify --yes',
+  };
+}
+
+/**
+ * The dsh account grant: the route the bridge actually uses.
+ *
+ * `absent` means there is nothing to use and signing in fixes it;
+ * `present-but-unusable` means something is there but broken, which is a
+ * different problem with a different fix.
+ */
+function grantCheck(credentialsPath) {
+  const state = grantState(credentialsPath);
+  const detail = state.detail.replace(/\.\s*$/, '');
+  if (state.state === 'usable') {
+    return { status: 'ok', detail: `usable: ${detail}` };
+  }
+  if (state.state === 'absent') {
+    return {
+      status: 'warn',
+      detail: `absent: ${detail}. The bridge stays inactive; the API-key route keeps working`,
+    };
+  }
+  return {
+    status: 'fail',
+    detail: `present but unusable: ${detail}. Run: pi-dsh-bridge sync`,
+  };
+}
+
+/**
+ * Is Pi actually wired to the shared account?
+ *
+ * A credential that cannot be read is one failure; a credential that is read
+ * but never handed to Pi is another. The bridge is only working when both
+ * halves are true: the provider carries the account header, and the program
+ * that header points at exists and can run.
+ */
+function bridgeCheck(layout, cliPath) {
+  let models;
+  try {
+    models = loadModels(layout.modelsPath);
+  } catch (error) {
+    return { status: 'fail', detail: error.message };
+  }
+  if (!models.exists) {
+    return {
+      status: 'warn',
+      detail: `${layout.modelsPath} does not exist; run: pi-dsh-bridge sync`,
+    };
+  }
+  const provider = models.data?.providers?.[SHARED_PROVIDER_ID];
+  if (!provider) {
+    return {
+      status: 'warn',
+      detail: `no ${SHARED_PROVIDER_ID} provider in ${layout.modelsPath}; run: pi-dsh-bridge sync`,
+    };
+  }
+  if (!isSharedProvider(provider)) {
+    return {
+      status: 'warn',
+      detail:
+        `the ${SHARED_PROVIDER_ID} provider is not wired to the dsh account; ` +
+        'run: pi-dsh-bridge sync',
+    };
+  }
+  const program = programFromCommand(provider.headers?.[ACCOUNT_TOKEN_HEADER]);
+  if (!program) {
+    return {
+      status: 'warn',
+      detail: `the ${SHARED_PROVIDER_ID} provider does not carry a runnable account command; run: pi-dsh-bridge sync`,
+    };
+  }
+  if (!isExecutableFile(program)) {
+    return {
+      status: 'fail',
+      detail: `the account-token program ${program} is missing or not executable; run: pi-dsh-bridge install`,
+    };
+  }
+  const expected = tokenProgram({ layout, cliPath });
+  if (program !== expected && program !== layout.tokenHelperPath && program !== cliPath) {
+    return {
+      status: 'warn',
+      detail:
+        `the ${SHARED_PROVIDER_ID} provider runs ${program}; run: pi-dsh-bridge sync to use ${expected}`,
+    };
+  }
+  return { status: 'ok', detail: `${SHARED_PROVIDER_ID} -> shared dsh account via ${program}` };
 }
 
 function journalCheck(layout, observedDsh) {
@@ -100,7 +199,7 @@ function journalCheck(layout, observedDsh) {
 }
 
 /** Cheap, offline health check. Never spends API credit, never prints a secret. */
-export function doctor({ options = {}, ui, layout, env = process.env }) {
+export function doctor({ options = {}, ui, layout, env = process.env, cliPath }) {
   const provider = options.provider ?? DEFAULT_PROVIDER;
   const model = options.model ?? DEFAULT_MODEL;
   const facts = preflight({ env });
@@ -158,8 +257,30 @@ export function doctor({ options = {}, ui, layout, env = process.env }) {
 
   push(
     'credential',
-    'a DeepSeek credential is present (value never read)',
+    'DeepSeek API key (fallback route) — presence is not working',
     credentialCheck(layout.authPath, env),
+  );
+
+  push(
+    'dsh-account',
+    'dsh account grant — the route the bridge uses',
+    grantCheck(layout.credentialsPath),
+  );
+
+  push(
+    'bridge',
+    'Pi is wired to the shared dsh account',
+    bridgeCheck(layout, cliPath),
+  );
+
+  push(
+    'token-helper',
+    'account-token helper installed and executable',
+    isExecutableFile(layout.tokenHelperPath)
+      ? { status: 'ok', detail: layout.tokenHelperPath }
+      : readIfExists(layout.tokenHelperPath).exists
+        ? { status: 'warn', detail: `${layout.tokenHelperPath} is not executable; run: pi-dsh-bridge install` }
+        : { status: 'warn', detail: `${layout.tokenHelperPath} is missing; run: pi-dsh-bridge install` },
   );
 
   push(
@@ -245,7 +366,7 @@ Cheap, offline health check. Never spends API credit and never prints a
 credential value, only whether one is present.
 
   --json               machine-readable output
-  --pi-home <dir>      default $PI_HOME or ~/.pi/agent
+  --pi-home <dir>      default $PI_CODING_AGENT_DIR or ~/.pi/agent
   --dsh-home <dir>     default $DSH_HOME or ~/.dsh
   --bin-dir <dir>      default $BIN_DIR or ~/.local/bin
   --state-dir <dir>    default $STATE_DIR or ~/.local/state/pi-dsh-bridge
