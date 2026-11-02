@@ -1,0 +1,15 @@
+# User patch layer for the dsh web profile, applied after every bundle layer.
+#
+# The account route (deepseek-account) answers 403 on
+# /auth-api/v0/users/current, so the default model is pinned to the API-key
+# route (deepseek-official), which is verified working with DEEPSEEK_API_KEY.
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-09-28.1
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoningEffort: high

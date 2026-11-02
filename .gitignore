@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Private, machine-specific artifacts (never publish)
+backups/
+.atl/
+.skill-registry.cache.json
+*.log
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# npm
+npm-debug.log*
+*.tgz
