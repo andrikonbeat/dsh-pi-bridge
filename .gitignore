@@ -16,3 +16,6 @@ Thumbs.db
 # npm
 npm-debug.log*
 *.tgz
+
+# ODD process notes: local working documents, not part of the product.
+odd/
