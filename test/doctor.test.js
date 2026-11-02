@@ -36,11 +36,14 @@ describe('doctor', () => {
         assert.equal(typeof check.detail, 'string');
         assert.equal(typeof check.title, 'string');
       }
-      for (const id of ['node', 'pi', 'dsh', 'settings', 'credential', 'launcher', 'wrapper', 'dsh-route', 'state']) {
+      for (const id of ['node', 'pi', 'dsh', 'settings', 'credential', 'dsh-account', 'bridge', 'token-helper', 'launcher', 'wrapper', 'dsh-route', 'state']) {
         assert.ok(checkById(doc, id), `missing check: ${id}`);
       }
       assert.equal(checkById(doc, 'pi').status, 'ok');
-      assert.equal(checkById(doc, 'credential').status, 'ok');
+      // Presence is not working: a stored key cannot be proven usable
+      // offline, so it is reported as present and unproven.
+      assert.equal(checkById(doc, 'credential').status, 'warn');
+      assert.match(checkById(doc, 'credential').detail, /balance not checked offline/);
     } finally {
       cleanupSandbox(box);
     }
@@ -88,8 +91,9 @@ describe('doctor', () => {
       const json = run(['doctor', '--json'], box);
       assert.doesNotMatch(json.stdout, new RegExp(SECRET));
       const doc = JSON.parse(json.stdout);
-      assert.equal(checkById(doc, 'credential').status, 'ok');
+      assert.equal(checkById(doc, 'credential').status, 'warn');
       assert.match(checkById(doc, 'credential').detail, /present/);
+      assert.match(checkById(doc, 'credential').detail, /balance not checked offline/);
     } finally {
       cleanupSandbox(box);
     }
@@ -127,7 +131,7 @@ describe('doctor', () => {
       const doc = JSON.parse(result.stdout);
       const route = checkById(doc, 'dsh-route');
       assert.equal(route.status, 'ok');
-      assert.match(route.detail, /deepseek-official/);
+      assert.match(route.detail, /deepseek-account/);
     } finally {
       cleanupSandbox(box);
     }

@@ -37,7 +37,17 @@ function resolveOne(flagValue, envValue, fallback, home) {
  * "Documents" folder.
  */
 export function resolveLayout({ flags = {}, env = {}, home = os.homedir() } = {}) {
-  const piHome = resolveOne(flags.piHome, env.PI_HOME, path.join(home, '.pi', 'agent'), home);
+  // Pi reads its own configuration from `$PI_CODING_AGENT_DIR` and falls back
+  // to `~/.pi/agent`. This CLI must write to the *same* directory Pi reads,
+  // or the bridge silently configures a home Pi never looks at. `PI_HOME`
+  // stays supported as an alias because the installer feature and its docs
+  // already use it, but Pi's own variable wins so the two can never diverge.
+  const piHome = resolveOne(
+    flags.piHome,
+    env.PI_CODING_AGENT_DIR ?? env.PI_HOME,
+    path.join(home, '.pi', 'agent'),
+    home,
+  );
   const dshHome = resolveOne(flags.dshHome, env.DSH_HOME, path.join(home, '.dsh'), home);
   const binDir = resolveOne(flags.binDir, env.BIN_DIR, path.join(home, '.local', 'bin'), home);
   const stateDir = resolveOne(
@@ -54,8 +64,11 @@ export function resolveLayout({ flags = {}, env = {}, home = os.homedir() } = {}
     stateDir,
     settingsPath: path.join(piHome, 'settings.json'),
     authPath: path.join(piHome, 'auth.json'),
+    modelsPath: path.join(piHome, 'models.json'),
+    credentialsPath: path.join(dshHome, '.credentials.yaml'),
     launcherPath: path.join(dshHome, 'start-web.sh'),
     wrapperPath: path.join(binDir, 'pi-deepseek'),
+    tokenHelperPath: path.join(binDir, 'pi-dsh-token'),
     journalPath: path.join(stateDir, 'journal.json'),
     overlayPath: path.join(stateDir, 'dsh-overlay.yml'),
     backupsDir: path.join(stateDir, 'backups'),

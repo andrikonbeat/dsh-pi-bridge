@@ -1,7 +1,13 @@
 import { spawnSync } from 'node:child_process';
 
-/** The route the `web` profile must compose with (contract, not configurable). */
-export const REQUIRED_PROVIDER = 'deepseek-official';
+/**
+ * The route the `web` profile must compose with (contract, not configurable).
+ *
+ * `deepseek-account` is the account route: it spends the same wallet the dsh
+ * web interface is signed in to, which is the whole point of the bridge.
+ * `deepseek-official` is the API-key route and is a different wallet.
+ */
+export const REQUIRED_PROVIDER = 'deepseek-account';
 export const REQUIRED_MODEL = 'deepseek-flash';
 
 export class DshError extends Error {

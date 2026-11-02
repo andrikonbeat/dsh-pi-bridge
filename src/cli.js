@@ -7,12 +7,15 @@ import { DOCTOR_HELP, doctor } from './commands/doctor.js';
 import { INSTALL_HELP, install } from './commands/install.js';
 import { UNINSTALL_HELP, uninstall } from './commands/uninstall.js';
 import { VERIFY_HELP, verify } from './commands/verify.js';
+import { SYNC_HELP, TOKEN_HELP, sync, token } from './commands/sync.js';
 
 const COMMANDS = new Map([
   ['install', { help: INSTALL_HELP, run: install }],
   ['uninstall', { help: UNINSTALL_HELP, run: uninstall }],
   ['doctor', { help: DOCTOR_HELP, run: doctor }],
   ['verify', { help: VERIFY_HELP, run: verify }],
+  ['sync', { help: SYNC_HELP, run: sync }],
+  ['token', { help: TOKEN_HELP, run: token }],
 ]);
 
 const VALUE_FLAGS = new Map([
@@ -25,6 +28,7 @@ const VALUE_FLAGS = new Map([
 ]);
 
 const BOOLEAN_FLAGS = new Map([
+  ['--check', 'check'],
   ['--dry-run', 'dryRun'],
   ['-y', 'yes'],
   ['--yes', 'yes'],
@@ -42,13 +46,15 @@ Commands:
   doctor      cheap, offline health check (never spends API credit)
   verify      end-to-end check; requires --yes (spends API credit)
   uninstall   restore exactly what install changed
+  sync        point Pi at the DeepSeek account the dsh web interface uses
+  token       print the account token (called by Pi; --check to test it)
   help        usage
 
 Options:
   --dry-run            print the planned changes and write nothing
   -y, --yes            do not ask for confirmation
   --json               machine-readable output (doctor, install)
-  --pi-home <dir>      default $PI_HOME or ~/.pi/agent
+  --pi-home <dir>      default $PI_CODING_AGENT_DIR or ~/.pi/agent
   --dsh-home <dir>     default $DSH_HOME or ~/.dsh
   --bin-dir <dir>      default $BIN_DIR or ~/.local/bin
   --state-dir <dir>    default $STATE_DIR or ~/.local/state/pi-dsh-bridge
@@ -181,5 +187,14 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     env,
   });
 
-  return known.run({ options, ui, layout, env });
+  return known.run({
+    options,
+    ui,
+    layout,
+    env,
+    // The provider entry records the command Pi runs to fetch the account
+    // token. It must be an absolute path to this very CLI, because Pi runs
+    // it with its own working directory, which is the user's project.
+    cliPath: path.join(packageRoot(), 'bin', 'cli.js'),
+  });
 }

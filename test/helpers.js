@@ -14,7 +14,7 @@ export const CLI = path.join(REPO_ROOT, 'bin', 'cli.js');
 export const DUMP_CONFIG = `- id: agent-default-model
   name: "@deepseek-ai/dsh-agent-default-model"
   config:
-    provider: deepseek-official
+    provider: deepseek-account
     model: deepseek-flash
 - id: agent-tools
   config:
@@ -35,7 +35,7 @@ const FAKE_DSH = `#!/bin/sh
 # deterministic YAML tree, and --patch <file> is accepted (an existing overlay
 # replaces the default model the way the real dsh does).
 version="\${FAKE_DSH_VERSION:-0.2.1-rc.5}"
-provider="\${FAKE_DSH_PROVIDER:-deepseek-official}"
+provider="\${FAKE_DSH_PROVIDER:-deepseek-account}"
 model="\${FAKE_DSH_MODEL:-deepseek-flash}"
 
 patch=""
@@ -45,8 +45,11 @@ for arg in "$@"; do
   prev="$arg"
 done
 if [ -n "$patch" ] && [ -f "$patch" ]; then
-  provider="deepseek-official"
-  model="deepseek-flash"
+  # The effective route reflects the overlay, the way the real dsh does.
+  patched_provider="$(grep -m1 'provider:' "$patch" | sed 's/.*provider:[[:space:]]*//' | tr -d '"\r')"
+  patched_model="$(grep -m1 'model:' "$patch" | sed 's/.*model:[[:space:]]*//' | tr -d '"\r')"
+  [ -n "$patched_provider" ] && provider="$patched_provider"
+  [ -n "$patched_model" ] && model="$patched_model"
 fi
 
 for arg in "$@"; do

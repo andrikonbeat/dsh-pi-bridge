@@ -140,7 +140,7 @@ Restore exactly what install changed, and nothing else.
   --dry-run            print the plan and change nothing
   -y, --yes            do not ask for confirmation
   --json               machine-readable output
-  --pi-home <dir>      default $PI_HOME or ~/.pi/agent
+  --pi-home <dir>      default $PI_CODING_AGENT_DIR or ~/.pi/agent
   --dsh-home <dir>     default $DSH_HOME or ~/.dsh
   --bin-dir <dir>      default $BIN_DIR or ~/.local/bin
   --state-dir <dir>    default $STATE_DIR or ~/.local/state/pi-dsh-bridge
