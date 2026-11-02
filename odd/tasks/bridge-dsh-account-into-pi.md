@@ -1,0 +1,144 @@
+# Bridge the dsh account subscription into Pi
+
+Make Pi use the same DeepSeek account that the dsh web interface uses, so that
+changing the account in the dsh web UI changes the account Pi uses too.
+
+This is a separate feature from the installer (`odd/tasks/productize-pi-dsh-bridge.md`).
+It builds on the installed CLI rather than replacing it.
+
+Route: new ODD feature, tracked in this document. The public command and flag
+contract of the installer (`install`, `doctor`, `verify`, `uninstall`) is frozen
+and is not changed by this feature, except that two commands are added and
+`doctor`/`verify` gain new checks.
+
+## Specs
+
+S1. Pi must use the DeepSeek account credential that the dsh web interface
+    uses, not a separate API key. When the user signs in to a different account
+    in the dsh web interface, Pi must use that new account without the user
+    re-entering anything in Pi.
+
+S2. The account credential is read fresh at every Pi start. No cached token, no
+    stale copy: the `pi-deepseek` launcher resolves the current grant each
+    time it starts Pi.
+
+S3. A manual `sync` command exists and performs the same credential wiring
+    explicitly, so a user can force a re-sync without restarting their shell.
+
+S4. The bridge replaces the `deepseek` provider rather than adding a second
+    one. There is exactly one path for Pi to reach DeepSeek, so "which account
+    is Pi using" always has one answer.
+
+S5. The account token never leaves the machine. It is never written into
+    `models.json`, never printed, and never copied into a second file. Pi
+    resolves it at request time from a command.
+
+S6. The bridge degrades honestly. If the dsh grant is missing, unreadable,
+    expired, or the format changed, `doctor` reports exactly what is wrong and
+    the API-key path keeps working. A broken bridge never makes Pi unstartable
+    and never fails with a cryptic error.
+
+S7. `doctor` distinguishes three states for every credential it checks:
+    absent, present-but-unusable, and usable. "Present" is not "working". This
+    is the defect that produced the confusion this feature exists to remove:
+    a credential with zero balance was reported as healthy.
+
+S8. `uninstall` restores the previous `models.json` exactly, including the
+    previous `deepseek` provider entry, and removes every file this feature
+    created.
+
+S9. The dsh web launcher must use the account route consistently. The existing
+    behaviour emits repeated `403` failures against
+    `/auth-api/v0/users/current` while still appearing to work, because the
+    model listing succeeds on a different path. The launcher must not present
+    a half-broken route as healthy.
+
+S10. `verify` must exercise the same path Pi actually uses (the shared account
+    route), not a separate API-key round trip.
+
+S11. Every command that mutates Pi's configuration is journaled and
+    reversible, with `--dry-run` support and idempotency, following the rules
+    already established by the installer feature.
+
+S12. No new runtime dependencies. The account credential is read with a
+    small, strict parser for the specific grant this feature needs.
+
+## Verified facts this feature relies on
+
+These were confirmed against the installed packages, not assumed. They are the
+load-bearing parts of the design; if any of them stops holding, the bridge is
+disabled and `doctor` says so.
+
+- `@deepseek-ai/dsh@0.2.1-rc.5` stores the account grant in
+  `~/.dsh/.credentials.yaml` under the record key
+  `deepseek-account-platform/default`, with payload fields `token` and
+  `issuer`. The issuer observed is `https://platform.deepseek.com`.
+- The dsh web interface uses that grant for inference by sending the header
+  `x-dsh-auth-token`, not `Authorization: Bearer`.
+- `GET https://api.deepseek.com/models` with `x-dsh-auth-token` returns
+  `HTTP 200`; without it, `HTTP 401`. The account token authenticates against
+  the regular DeepSeek API host.
+- `POST https://api.deepseek.com/chat/completions` with `x-dsh-auth-token`
+  and model `deepseek-flash` returns `HTTP 200` with a real `usage` block.
+  The account token is therefore usable for completions, which is what Pi
+  needs.
+- Pi's provider config (`~/.pi/agent/models.json`) accepts per-provider
+  `baseUrl`, `api`, `headers`, and `authHeader`. Header values resolve with
+  the same rules as `apiKey`: a literal, an environment reference, or a
+  `!command` whose stdout is used. `authHeader` defaults to `false`, so no
+  `Authorization: Bearer` header is added when the custom header is used.
+- A `!command` header value is resolved once per Pi process and cached for
+  that process lifetime only. A fresh Pi start therefore reads the current
+  token, which satisfies S2 without any extra machinery.
+- The dsh account route maps the upstream `QUOTA` error to
+  `ACCOUNT_QUOTA_EXCEEDED_CODE`, and the API-key route surfaces the same
+  underlying exhaustion as `402 insufficient_balance_error`. Both are the same
+  account and the same wallet, reached by two different mechanisms.
+
+## Tasks
+
+| ID | Spec | Route | Status | Commit |
+| --- | --- | --- | --- | --- |
+| T1 | S5 S12 — read the dsh account grant (strict, no deps) | inline | | |
+| T2 | S1 S4 S5 — write the shared provider into `models.json` | inline | | |
+| T3 | S2 — `pi-deepseek` resolves the credential fresh at each start | inline | | |
+| T4 | S3 — `sync` command | inline | | |
+| T5 | S6 S7 — `doctor`: absent / unusable / usable, per credential | inline | | |
+| T6 | S8 S11 — `uninstall` restores the previous `models.json` exactly | inline | | |
+| T7 | S9 — dsh launcher uses the account route consistently | inline | | |
+| T8 | S10 — `verify` exercises the shared route | inline | | |
+| T9 | all — tests over a hermetic sandbox | inline | | |
+| T10 | S1 S4 — docs: what the bridge does, how to use it, how it fails | inline | | |
+
+## Log
+
+L1 (verbatim): "Si investiga todo el objetivo es que cuando cambie mi cuenta via
+interfaz web tambien en Pi se usen los creditos de esa cuenta nueva."
+L2 (decision): credential resolution is fresh at every Pi start (the launcher
+resolves the grant each time it starts Pi), and a manual `sync` command exists
+for an explicit re-sync. Chosen by the user.
+L3 (decision): the bridge replaces the `deepseek` provider instead of adding a
+second one, so there is a single path from Pi to DeepSeek. Chosen by the user.
+L4 (correction): an earlier analysis of this session claimed the API key and the
+dsh account were two separate wallets. That was wrong. The `ACCOUNT_QUOTA`
+error the user saw in the dsh web UI and the `402 insufficient_balance_error`
+seen in Pi are the same account and the same wallet reached by two mechanisms:
+the account route maps the upstream `QUOTA` error to `ACCOUNT_QUOTA`.
+L5 (evidence): the `deepseek` API key in `~/.pi/agent/auth.json` has the same
+SHA-256 fingerprint in all four backups of that file (25 Oct, 28 Oct, 31 Oct,
+and current). It was never created during this session. `GET /user/balance`
+with it returns `HTTP 200` with `is_available: false` and a `0.00` balance:
+a valid credential on an account with no credit left.
+L6 (evidence): `x-dsh-auth-token` against `https://api.deepseek.com/models`
+returns `HTTP 200` while the same request without the header returns `401`.
+`POST /chat/completions` with that header and model `deepseek-flash` returns
+`HTTP 200` with a real `usage` block. The account grant can drive Pi.
+L7 (evidence): `resolveConfigValue` in Pi executes a `!command` config value
+through the shell, uses its trimmed stdout, and caches it only for the life of
+the process (`commandResultCache`). `resolveHeadersOrThrow` applies it to
+provider headers. `withConfiguredAuth` adds `Authorization: Bearer` only when
+`authHeader` is true; it defaults to false.
+L8 (constraint, accepted): `x-dsh-auth-token` is an undocumented DeepSeek
+header and `~/.dsh/.credentials.yaml` is an internal dsh format in a release
+candidate. The bridge therefore ships with an explicit, tested fallback to the
+API-key path, and `doctor` states which path is live.
