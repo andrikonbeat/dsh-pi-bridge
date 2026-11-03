@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `pi-deepseek` wrapper no longer dies with an unbound-variable error
   when `HOME` is unset: it falls back to `DSH_HOME`, and when neither is set
   it says which variable to set.
+- Waiting for the account grant can be interrupted with Ctrl-C. The panel
+  started by that run is stopped as a process group instead of being left
+  behind, and the run reports the interruption.
 - `models.json` is written with every shell argument POSIX single-quoted, so
   a program path containing spaces, `$`, backticks, quotes or newlines is
   passed to the token command literally instead of being re-interpreted by
