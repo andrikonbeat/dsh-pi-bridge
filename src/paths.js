@@ -29,10 +29,32 @@ function expandTilde(value, home) {
   return value;
 }
 
+/**
+ * The first value that carries something.
+ *
+ * An empty string is treated as "not set": a variable exported as
+ * `PI_CODING_AGENT_DIR=` says nothing about where Pi lives, and letting it
+ * win would shadow the `PI_HOME` alias and the default. Skipping it here, in
+ * one place, is what keeps that rule true for every variable.
+ */
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value);
+    if (text.trim() === '') continue;
+    return text;
+  }
+  return undefined;
+}
+
 function resolveOne(flagValue, envValue, fallback, home) {
-  const raw = flagValue ?? envValue;
-  if (raw === undefined || raw === null || raw === '') return path.resolve(fallback);
-  return path.resolve(expandTilde(String(raw), home));
+  const raw = firstNonEmpty(flagValue, envValue);
+  if (raw === undefined) return path.resolve(fallback);
+  const expanded = expandTilde(raw, home);
+  // A relative path is resolved against the home directory, never against
+  // the current working directory: the same command must mean the same
+  // thing whichever directory it is run from.
+  return path.resolve(home, expanded);
 }
 
 /**
@@ -51,7 +73,7 @@ export function resolveLayout({ flags = {}, env = {}, home = os.homedir() } = {}
   // already use it, but Pi's own variable wins so the two can never diverge.
   const piHome = resolveOne(
     flags.piHome,
-    env.PI_CODING_AGENT_DIR ?? env.PI_HOME,
+    firstNonEmpty(env.PI_CODING_AGENT_DIR, env.PI_HOME),
     path.join(home, '.pi', 'agent'),
     home,
   );

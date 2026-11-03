@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to fix.
 - The token helper is only used when it is a regular executable file; a
   directory or a file without the execute bit falls back to the CLI.
+- An exported-but-empty `PI_CODING_AGENT_DIR` no longer shadows the `PI_HOME`
+  alias and the default.
+- A relative path is resolved against the home directory instead of the
+  current working directory, so the same flag means the same thing wherever
+  the command is run from.
+- The `pi-deepseek` wrapper no longer dies with an unbound-variable error
+  when `HOME` is unset: it falls back to `DSH_HOME`, and when neither is set
+  it says which variable to set.
 - `models.json` is written with every shell argument POSIX single-quoted, so
   a program path containing spaces, `$`, backticks, quotes or newlines is
   passed to the token command literally instead of being re-interpreted by

@@ -37,7 +37,20 @@ MODEL="${PI_DEEPSEEK_MODEL:-deepseek-flash}"
 # or half-written credential surfaces as a 401 from DeepSeek with no hint of
 # what went wrong.
 HELPER="$(dirname "$0")/pi-dsh-token"
-DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+# HOME is not guaranteed to be set: `set -u` turns a missing HOME into an
+# "unbound variable" error that says nothing about what to do. Resolve the dsh
+# home from DSH_HOME when it is given, from HOME otherwise, and say plainly
+# when neither is available.
+DSH_HOME_DIR="${DSH_HOME:-}"
+if [ -z "$DSH_HOME_DIR" ]; then
+  HOME_DIR="${HOME:-}"
+  if [ -z "$HOME_DIR" ]; then
+    echo "ERROR: neither DSH_HOME nor HOME is set, so the dsh account directory is unknown." >&2
+    echo "  Set HOME to your home directory, or set DSH_HOME to the dsh directory." >&2
+    exit 1
+  fi
+  DSH_HOME_DIR="$HOME_DIR/.dsh"
+fi
 if [ -x "$HELPER" ]; then
   TOKEN_CHECK=("$HELPER" token --check --dsh-home "$DSH_HOME_DIR")
 elif command -v pi-dsh-bridge >/dev/null 2>&1; then
