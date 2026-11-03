@@ -41,11 +41,28 @@ export function journalLockPath(layout) {
  * `openSync(..., 'wx')` is the claim: it succeeds for exactly one process and
  * fails for every other process that tries the same path. The caller owns the
  * returned handle and must release it in a `finally` block.
+ *
+ * A lock whose recorded owner is provably gone is taken over instead of
+ * refusing forever: a crash mid-install must not make the `uninstall` that
+ * recovers it impossible to run. A lock whose owner is alive, or whose owner
+ * cannot be read at all, still refuses — the safe direction.
  */
 export function acquireJournalLock(layout) {
   const file = journalLockPath(layout);
   fs.mkdirSync(layout.stateDir, { recursive: true });
 
+  try {
+    return claimLock(file);
+  } catch (error) {
+    if (!(error instanceof LockHeldError)) throw error;
+    if (!takeOverDeadLock(file)) throw error;
+    // Exactly one process wins the re-claim. A second one loses here and gets
+    // the honest LockHeldError, which is what the message promises.
+    return claimLock(file);
+  }
+}
+
+function claimLock(file) {
   let descriptor;
   try {
     descriptor = fs.openSync(file, 'wx', 0o600);
@@ -80,6 +97,44 @@ export function acquireJournalLock(layout) {
       }
     },
   };
+}
+
+/** The pid the lock names, or null when it names nothing readable. */
+function lockOwnerPid(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const pid = Number.parseInt(text.trim(), 10);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/** True when the process exists. EPERM means it exists and is not ours. */
+function ownerIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+/**
+ * Remove a lock whose owner is gone. An unreadable owner is never assumed
+ * dead: the takeover has to be provable, or it is not a takeover.
+ */
+function takeOverDeadLock(file) {
+  const pid = lockOwnerPid(file);
+  if (pid === null) return false;
+  if (ownerIsAlive(pid)) return false;
+  try {
+    fs.unlinkSync(file);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  return true;
 }
 
 export function readJournal(file) {

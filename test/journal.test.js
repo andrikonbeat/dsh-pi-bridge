@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -36,10 +37,14 @@ const LOCK_MESSAGE = (file) =>
   `another pi-dsh-bridge run is in progress (lock: ${file}). ` +
   'Wait for it to finish, or delete the file if no run is alive.';
 
-/** Stand in for a run that is still alive: the lock file exists. */
+/**
+ * Stand in for a run that is still alive: the lock file exists and names a
+ * process that can be proven to exist. A made-up pid would be a lock whose
+ * owner is gone, which the bridge now treats as recoverable.
+ */
 function holdLock(box) {
   fs.mkdirSync(box.stateDir, { recursive: true });
-  fs.writeFileSync(lockPath(box), '424242\n');
+  fs.writeFileSync(lockPath(box), `${process.pid}\n`);
   return lockPath(box);
 }
 
@@ -269,6 +274,50 @@ describe('the run lock', () => {
         removed: [],
         changed: [],
       });
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('takes over a lock left behind by a run that is no longer alive', () => {
+    const box = createSandbox();
+    try {
+      // A process that has already exited: its pid is proof of a crash, not of
+      // a live run, so the lock must not block recovery forever.
+      const dead = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+      fs.mkdirSync(box.stateDir, { recursive: true });
+      fs.writeFileSync(lockPath(box), `${dead.pid}\n`);
+
+      const result = run(['install', '--yes'], box);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(fs.existsSync(lockPath(box)), false, 'the takeover released the lock');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('refuses a lock whose recorded owner is still alive', () => {
+    const box = createSandbox();
+    try {
+      const lock = holdLock(box);
+      const result = run(['install', '--yes'], box);
+
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr.trim(), LOCK_MESSAGE(lock));
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('refuses a lock it cannot attribute to any process', () => {
+    const box = createSandbox();
+    try {
+      fs.mkdirSync(box.stateDir, { recursive: true });
+      fs.writeFileSync(lockPath(box), '');
+
+      const result = run(['install', '--yes'], box);
+      assert.equal(result.status, 1, 'an unreadable owner is never assumed dead');
+      assert.match(result.stderr, /another pi-dsh-bridge run is in progress/);
     } finally {
       cleanupSandbox(box);
     }
