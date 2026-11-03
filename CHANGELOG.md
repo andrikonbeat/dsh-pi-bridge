@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Unicode glyphs are used only on a terminal; piped output, `TERM=dumb` and
+  `--ascii` get plain ASCII.
+- Terminal text is measured in display columns, so CJK characters, emoji and
+  combining marks no longer make boxes misaligned, and truncation never cuts
+  a character in half.
 - `--json` now emits a JSON document for `--version`, `--help`, `help` and
   usage errors, so machine consumers never receive mixed output. Usage errors
   report `{ok:false,"error":"...","code":2}` on stdout with exit code 2.
