@@ -314,6 +314,17 @@ export async function install({ options = {}, ui, layout, env = process.env, cli
   }
 
   if (changed.length > 0) {
+    // Prompt for confirmation unless --yes is given or non-interactive
+    if (!options.yes) {
+      const ok = await ui.confirm(
+        `About to write ${changed.length} path(s). Proceed?`
+      );
+      if (!ok) {
+        ui.error('Aborted by user.');
+        return 1;
+      }
+    }
+
     const batch = createBackupBatch({ backupsDir: layout.backupsDir });
     const entries = [];
     for (const change of changed) {
