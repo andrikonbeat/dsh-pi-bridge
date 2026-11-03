@@ -1,12 +1,44 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
+import { describeRoute } from '../src/dsh.js';
 import { cleanupSandbox, createSandbox, run } from './helpers.js';
 
 const SECRET = 'sk-super-secret-value-1234';
 
 function checkById(doc, id) {
   return doc.checks.find((check) => check.id === id);
+}
+
+/**
+ * Replace the sandbox's fake `dsh` with one that prints `dump` for
+ * `--dump-config`. The point is to feed the route probe the exact documents
+ * a real dsh can print, including the ones the shipped fixture never does.
+ */
+function useDumpConfig(box, dump) {
+  const file = path.join(box.root, 'dump-config.yml');
+  fs.writeFileSync(file, dump);
+  const launcher = path.join(box.fakebin, 'dsh');
+  // Shell builtins only: the sandbox PATH holds nothing else.
+  fs.writeFileSync(
+    launcher,
+    `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --version|-V) printf '0.2.1-rc.5\\n'; exit 0 ;;
+    --dump-config)
+      while IFS= read -r line; do printf '%s\\n' "$line"; done < '${file}'
+      exit 0
+      ;;
+  esac
+done
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  fs.chmodSync(launcher, 0o755);
 }
 
 describe('doctor', () => {
@@ -119,6 +151,86 @@ describe('doctor', () => {
       assert.equal(result.status, 1);
       const doc = JSON.parse(result.stdout);
       assert.equal(checkById(doc, 'settings').status, 'fail');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('never describes a successful probe with a placeholder', () => {
+    assert.doesNotMatch(describeRoute({ ok: true, provider: 'deepseek-account', model: 'deepseek-flash' }), /\?/);
+    // A successful result that carries no values cannot be described, and
+    // saying so is better than printing `provider: ?` as if it were a route.
+    assert.equal(describeRoute({ ok: true, provider: null, model: 'deepseek-flash' }), 'unknown');
+  });
+
+  it('fails the route probe when agent-default-model carries no provider', () => {
+    const box = createSandbox();
+    try {
+      useDumpConfig(box, '- id: agent-default-model\n  config:\n    model: deepseek-flash\n');
+      const doc = JSON.parse(run(['doctor', '--json'], box).stdout);
+      const route = checkById(doc, 'dsh-route');
+      assert.equal(route.status, 'warn');
+      assert.match(route.detail, /the effective config has no agent-default-model provider/);
+
+      const human = run(['doctor'], box);
+      assert.doesNotMatch(human.stdout, /provider: \?/);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('fails the route probe when agent-default-model carries no model', () => {
+    const box = createSandbox();
+    try {
+      useDumpConfig(box, '- id: agent-default-model\n  config:\n    provider: deepseek-account\n');
+      const doc = JSON.parse(run(['doctor', '--json'], box).stdout);
+      const route = checkById(doc, 'dsh-route');
+      assert.equal(route.status, 'warn');
+      assert.match(route.detail, /the effective config has no agent-default-model model/);
+
+      const human = run(['doctor'], box);
+      assert.doesNotMatch(human.stdout, /model: \?/);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('follows patch semantics: the last id match wins, not the first', () => {
+    const box = createSandbox();
+    try {
+      // A bundle entry followed by the overlay that replaces it: the real dsh
+      // applies `--patch` last, so the second entry is the effective one.
+      useDumpConfig(
+        box,
+        '- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: deepseek-v4\n' +
+          '- id: agent-default-model\n  config:\n    provider: deepseek-account\n    model: deepseek-flash\n',
+      );
+      const doc = JSON.parse(run(['doctor', '--json'], box).stdout);
+      const route = checkById(doc, 'dsh-route');
+      assert.equal(route.status, 'ok', route.detail);
+      assert.match(route.detail, /deepseek-account/);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('ignores a trailing comment after an id, and a commented-out entry still does not match', () => {
+    const box = createSandbox();
+    try {
+      useDumpConfig(
+        box,
+        '# - id: agent-default-model\n' +
+          '#   config:\n' +
+          '#     provider: deepseek-official\n' +
+          '- id: agent-default-model  # the route this panel serves\n' +
+          '  config:\n' +
+          '    provider: deepseek-account   # required by the bridge\n' +
+          '    model: deepseek-flash\n',
+      );
+      const doc = JSON.parse(run(['doctor', '--json'], box).stdout);
+      const route = checkById(doc, 'dsh-route');
+      assert.equal(route.status, 'ok', route.detail);
+      assert.match(route.detail, /provider: deepseek-account, model: deepseek-flash/);
     } finally {
       cleanupSandbox(box);
     }
