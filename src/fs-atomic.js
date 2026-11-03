@@ -33,12 +33,27 @@ export function writeFileAtomic(file, bytes, { mode } = {}) {
     fs.writeFileSync(handle, bytes);
     if (mode !== undefined) fs.fchmodSync(handle, mode);
     fs.fsyncSync(handle);
-  } finally {
+  } catch (error) {
+    // Clean up temp file on any write-phase failure before re-throwing.
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      /* the original error is the one worth reporting */
+    }
     fs.closeSync(handle);
+    throw error;
   }
+  fs.closeSync(handle);
 
   try {
     fs.renameSync(temp, file);
+    // fsync the parent directory so the rename is durable across crashes.
+    const dirHandle = fs.openSync(dir, 'r');
+    try {
+      fs.fsyncSync(dirHandle);
+    } finally {
+      fs.closeSync(dirHandle);
+    }
   } catch (error) {
     // Never leave a stray temporary file behind if the rename could not happen.
     try {
