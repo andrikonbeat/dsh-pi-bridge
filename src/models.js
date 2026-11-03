@@ -49,6 +49,34 @@ export class ModelsParseError extends Error {
 }
 
 /**
+ * The file parses as JSON but does not have the shape Pi expects.
+ *
+ * Kept distinct from `ModelsParseError` because the fix is different: the
+ * JSON is fine, the `providers` key inside it is not.
+ */
+export class ModelsShapeError extends Error {
+  constructor(file, detail) {
+    super(
+      `${file} has an unexpected shape: ${detail}. Refusing to write: fix or remove it first, ` +
+        'nothing was changed.',
+    );
+    this.name = 'ModelsShapeError';
+    this.file = file;
+  }
+}
+
+/**
+ * POSIX single-quote a string for safe shell interpolation.
+ *
+ * Every character is literal inside single quotes except the single quote
+ * itself, which is escaped by ending the quote, adding an escaped quote,
+ * and reopening: `'"'"'`.
+ */
+function shellQuote(str) {
+  return "'" + str.replace(/'/g, "'\"'\"'") + "'";
+}
+
+/**
  * The command Pi runs to obtain the account token.
  *
  * It prints the token and nothing else. Any diagnostic goes to stderr so it
@@ -56,10 +84,13 @@ export class ModelsParseError extends Error {
  *
  * `program` is an absolute path: Pi runs the command with the user's project
  * as its working directory, and the path must survive an `npx` cache clean.
+ *
+ * Every argument is POSIX single-quoted so that $, backticks, spaces, quotes,
+ * newlines, and other shell metacharacters are literal.
  */
 export function tokenCommand({ program, dshHome }) {
   const args = [program, 'token', '--dsh-home', dshHome];
-  return `!${args.map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(' ')}`;
+  return `!${args.map(shellQuote).join(' ')}`;
 }
 
 /**
@@ -102,10 +133,16 @@ export function readModelsRaw(file) {
   }
 }
 
+/** Strip a leading UTF-8 BOM if present. */
+function stripBom(text) {
+  return text.startsWith('\ufeff') ? text.slice(1) : text;
+}
+
 export function parseModels(raw, file) {
   let data;
   try {
-    data = JSON.parse(raw.toString('utf8'));
+    const text = stripBom(raw.toString('utf8'));
+    data = JSON.parse(text);
   } catch (error) {
     throw new ModelsParseError(file, error.message);
   }
@@ -119,7 +156,20 @@ export function parseModels(raw, file) {
 export function loadModels(file) {
   const raw = readModelsRaw(file);
   if (raw === null) return { exists: false, raw: null, data: null };
-  return { exists: true, raw, data: parseModels(raw, file) };
+  const data = parseModels(raw, file);
+  const providers = data.providers;
+  if (providers !== undefined && providers !== null) {
+    if (Array.isArray(providers)) {
+      throw new ModelsShapeError(file, '`providers` must be an object, not an array');
+    }
+    if (typeof providers !== 'object') {
+      throw new ModelsShapeError(
+        file,
+        `\`providers\` must be an object, not ${typeof providers}`,
+      );
+    }
+  }
+  return { exists: true, raw, data };
 }
 
 /**
@@ -175,16 +225,55 @@ export function isSharedProvider(entry) {
 /**
  * The program a `!command` header value runs.
  *
- * The command is `<program> token --dsh-home <dir>`, and the program is
- * quoted when its path contains spaces. Reading it back is what lets
- * `doctor` check the file the configuration actually points at, instead of
- * the one it merely ought to point at.
+ * The command is `<program> token --dsh-home <dir>`. Reading it back is what
+ * lets `doctor` check the file the configuration actually points at, instead
+ * of the one it merely ought to point at.
+ *
+ * Two formats are understood, because both exist on disk:
+ *
+ *   - the current one, where every argument is POSIX single-quoted and an
+ *     embedded single quote is escaped as `'"'"'` (close quote, double-quoted
+ *     quote, reopen quote);
+ *   - the older one, where a path containing whitespace was wrapped in JSON
+ *     double quotes and everything else was left bare.
+ *
+ * The program is the first argument in both cases.
  */
 export function programFromCommand(command) {
   if (typeof command !== 'string' || !command.startsWith('!')) return null;
   const rest = command.slice(1);
   if (rest.length === 0) return null;
+
+  if (rest.startsWith("'")) {
+    let index = 1;
+    let result = '';
+    while (index < rest.length) {
+      const character = rest[index];
+      if (character === "'") {
+        // `'"'"'` is five characters: the closing quote of this segment, a
+        // double-quoted literal single quote, and the opening quote of the
+        // next segment. A bare `'` that is not followed by `"'"` closes the
+        // argument.
+        if (
+          rest[index + 1] === '"' &&
+          rest[index + 2] === "'" &&
+          rest[index + 3] === '"' &&
+          rest[index + 4] === "'"
+        ) {
+          result += "'";
+          index += 5;
+          continue;
+        }
+        return result;
+      }
+      result += character;
+      index += 1;
+    }
+    return null;
+  }
+
   if (rest.startsWith('"')) {
+    // Legacy JSON-quoted form: parse the first double-quoted string.
     let escaped = false;
     for (let index = 1; index < rest.length; index += 1) {
       const character = rest[index];
@@ -206,6 +295,8 @@ export function programFromCommand(command) {
     }
     return null;
   }
+
+  // Bare form: the program is the first whitespace-delimited token.
   const match = rest.match(/^(\S+)/);
   return match ? match[1] : null;
 }
