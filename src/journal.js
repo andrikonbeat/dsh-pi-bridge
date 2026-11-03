@@ -19,6 +19,69 @@ export class JournalError extends Error {
   }
 }
 
+/** Another mutating run already owns the journal lock. */
+export class LockHeldError extends Error {
+  constructor(file) {
+    super(
+      `another pi-dsh-bridge run is in progress (lock: ${file}). ` +
+        'Wait for it to finish, or delete the file if no run is alive.',
+    );
+    this.name = 'LockHeldError';
+    this.file = file;
+  }
+}
+
+export function journalLockPath(layout) {
+  return path.join(layout.stateDir, 'journal.lock');
+}
+
+/**
+ * Claim the state directory for one mutating run.
+ *
+ * `openSync(..., 'wx')` is the claim: it succeeds for exactly one process and
+ * fails for every other process that tries the same path. The caller owns the
+ * returned handle and must release it in a `finally` block.
+ */
+export function acquireJournalLock(layout) {
+  const file = journalLockPath(layout);
+  fs.mkdirSync(layout.stateDir, { recursive: true });
+
+  let descriptor;
+  try {
+    descriptor = fs.openSync(file, 'wx', 0o600);
+  } catch (error) {
+    if (error.code === 'EEXIST') throw new LockHeldError(file);
+    throw error;
+  }
+
+  try {
+    fs.writeFileSync(descriptor, `${process.pid}\n`);
+  } catch (error) {
+    fs.closeSync(descriptor);
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* the original error is the one worth reporting */
+    }
+    throw error;
+  }
+  fs.closeSync(descriptor);
+
+  let released = false;
+  return {
+    file,
+    release() {
+      if (released) return;
+      released = true;
+      try {
+        fs.unlinkSync(file);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    },
+  };
+}
+
 export function readJournal(file) {
   let raw;
   try {
@@ -36,6 +99,22 @@ export function readJournal(file) {
   if (data === null || typeof data !== 'object' || !Array.isArray(data.entries)) {
     throw new JournalError(file, 'expected an object with an "entries" array');
   }
+  // A journal from a version this code does not know may mean something else
+  // entirely: acting on it would restore the wrong bytes. Refuse it instead.
+  if (data.version !== JOURNAL_VERSION) {
+    throw new JournalError(
+      file,
+      `expected version ${JOURNAL_VERSION}, found ${JSON.stringify(data.version ?? null)}`,
+    );
+  }
+  data.entries.forEach((entry, index) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new JournalError(file, `entry ${index} is not an object`);
+    }
+    if (typeof entry.path !== 'string' || entry.path === '') {
+      throw new JournalError(file, `entry ${index} has no string "path"`);
+    }
+  });
   return data;
 }
 
@@ -51,6 +130,9 @@ export function createJournal({ versions, installedAt = new Date().toISOString()
  * Merge new entries into an existing journal, preserving the *original* `before`
  * of a path that was already recorded: a second install must never overwrite the
  * record of what the file looked like before the first one.
+ *
+ * `after` and `sha256` do follow the latest write: they describe the bytes this
+ * bridge last put on disk, which is what uninstall needs to recognise them.
  */
 export function mergeEntries(journal, entries) {
   const merged = journal.entries.map((entry) => ({ ...entry }));
@@ -58,6 +140,7 @@ export function mergeEntries(journal, entries) {
     const existing = merged.find((candidate) => candidate.path === entry.path);
     if (existing) {
       existing.after = entry.after;
+      if (entry.sha256) existing.sha256 = entry.sha256;
     } else {
       merged.push({ ...entry });
     }
@@ -75,13 +158,22 @@ export function makeStamp(date = new Date()) {
 }
 
 function uniqueStampDir(backupsDir, stamp) {
-  let candidate = path.join(backupsDir, stamp);
-  let counter = 1;
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(backupsDir, `${stamp}-${counter}`);
-    counter += 1;
+  fs.mkdirSync(backupsDir, { recursive: true });
+  let counter = 0;
+  for (;;) {
+    const candidate =
+      counter === 0 ? path.join(backupsDir, stamp) : path.join(backupsDir, `${stamp}-${counter}`);
+    try {
+      // `mkdir` without `recursive` is the claim itself: two runs that start in
+      // the same second cannot both create the same directory, so neither can
+      // ever write its backups into the other's batch.
+      fs.mkdirSync(candidate);
+      return candidate;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      counter += 1;
+    }
   }
-  return candidate;
 }
 
 /**
@@ -93,7 +185,6 @@ export function createBackupBatch({ backupsDir, stamp = makeStamp() }) {
   const ensureDir = () => {
     if (!stampDir) {
       stampDir = uniqueStampDir(backupsDir, stamp);
-      fs.mkdirSync(stampDir, { recursive: true });
     }
     return stampDir;
   };
