@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import {
   assetPath,
@@ -22,6 +23,8 @@ import { ensureAccount } from '../onboarding.js';
 import { writeFileAtomic } from '../fs-atomic.js';
 import {
   JournalError,
+  LockHeldError,
+  acquireJournalLock,
   createBackupBatch,
   createJournal,
   mergeEntries,
@@ -260,143 +263,174 @@ export async function install({ options = {}, ui, layout, env = process.env, cli
   const warnings = [];
   if (!facts.pi.found) warnings.push('pi was not found on PATH; settings were still written');
 
-  // Never overwrite a journal we cannot read: that would destroy the only record
-  // of what uninstall needs to restore.
-  let journal;
+  // One mutating run at a time. Without the lock a second install could read a
+  // journal the first one is in the middle of rewriting, and the two would
+  // interleave their backups and settings keys. A dry run writes nothing, so it
+  // takes no lock.
+  let lock = null;
+  if (options.dryRun !== true) {
+    try {
+      lock = acquireJournalLock(layout);
+    } catch (error) {
+      if (error instanceof LockHeldError) {
+        ui.note(error.message);
+        return 1;
+      }
+      throw error;
+    }
+  }
+
   try {
-    journal = readJournal(layout.journalPath);
-  } catch (error) {
-    if (error instanceof JournalError) {
+    let plan;
+    let changed;
+    let versions;
+    // Never overwrite a journal we cannot read: that would destroy the only record
+    // of what uninstall needs to restore.
+    let journal;
+    try {
+      journal = readJournal(layout.journalPath);
+    } catch (error) {
+      if (error instanceof JournalError) {
+        ui.error(error.message);
+        return 1;
+      }
+      throw error;
+    }
+
+    try {
+      plan = planChanges({
+        layout,
+        provider,
+        model,
+        dshPath: facts.dsh.found ? facts.dsh.path : null,
+        env,
+        warnings,
+        grant: accountGrantStatus(layout.credentialsPath),
+        cliPath,
+      });
+    } catch (error) {
       ui.error(error.message);
       return 1;
     }
-    throw error;
-  }
 
-  let plan;
-  try {
-    plan = planChanges({
-      layout,
-      provider,
-      model,
-      dshPath: facts.dsh.found ? facts.dsh.path : null,
-      env,
-      warnings,
-      grant: accountGrantStatus(layout.credentialsPath),
-      cliPath,
-    });
-  } catch (error) {
-    ui.error(error.message);
-    return 1;
-  }
+    changed = plan.filter((change) => change.action === 'created' || change.action === 'updated');
+    versions = { pi: facts.pi.version, dsh: facts.dsh.version, node: process.versions.node };
 
-  const changed = plan.filter((change) => change.action === 'created' || change.action === 'updated');
-  const versions = { pi: facts.pi.version, dsh: facts.dsh.version, node: process.versions.node };
+    if (options.dryRun) {
+      ui.line(`install plan (dry run: nothing is written)`);
+      for (const change of plan) {
+        ui.line(`  ${change.action.padEnd(9)} ${change.path}  ${change.detail}`);
+      }
+      for (const warning of warnings) ui.warn('note', warning);
+      if (ui.json) {
+        ui.emitJson({
+          command: 'install',
+          ok: true,
+          dryRun: true,
+          versions,
+          journal: layout.journalPath,
+          warnings,
+          changes: plan.map((change) => ({ path: change.path, action: change.action, detail: change.detail })),
+        });
+      }
+      return 0;
+    }
 
-  if (options.dryRun) {
-    ui.line(`install plan (dry run: nothing is written)`);
+    if (changed.length > 0) {
+      const batch = createBackupBatch({ backupsDir: layout.backupsDir });
+      const settingsPlan = plan.find((change) => change.kind === 'settings');
+      // The journal is committed *before* every write: a signal, an ENOSPC or an
+      // EACCES between any two steps then leaves a journal that already covers
+      // every path whose bytes changed, so uninstall can still put the machine
+      // back exactly as it was.
+      let next = journal ? { ...journal, versions } : createJournal({ versions });
+      // Recorded even when settings.json already matches what install wants:
+      // uninstall needs to know which keys this bridge owns and what they were.
+      if (settingsPlan) {
+        next.settings = journalSettings(journal, settingsPlan.current.data, settingsPlan.desired);
+      }
+      for (const change of changed) {
+        const current = readIfExists(change.path);
+        const before = current.exists ? batch.backup(change.path) : null;
+        const entry = {
+          path: change.path,
+          before,
+          after: change.kind === 'settings' ? 'settings-keys' : 'file-copy',
+          // The digest of the exact bytes about to be written. Without it a later
+          // uninstall could not tell its own file from one the user rewrote.
+          sha256: createHash('sha256').update(change.bytes).digest('hex'),
+        };
+        next = { ...next, entries: mergeEntries(next, [entry]) };
+        writeJournal(layout.journalPath, next);
+
+        fs.mkdirSync(path.dirname(change.path), { recursive: true });
+        // Atomic: Pi executes the token helper and parses models.json while it
+        // runs, so these files must never be observable half-written.
+        writeFileAtomic(change.path, change.bytes, { mode: change.fileMode });
+      }
+    }
+
+    ui.line('install');
     for (const change of plan) {
       ui.line(`  ${change.action.padEnd(9)} ${change.path}  ${change.detail}`);
     }
     for (const warning of warnings) ui.warn('note', warning);
+    ui.line(
+      changed.length === 0
+        ? `nothing to do: ${plan.length} path(s) already match (journal unchanged)`
+        : `${changed.length} path(s) changed, journal at ${layout.journalPath}`,
+    );
+
+    // Everything is on disk. What is left is the one step only the user can take:
+    // signing in to DeepSeek inside the dsh web panel. So do not hand them a
+    // to-do list — open the panel, hand over the URL and detect the account.
+    ui.blank();
+    const ready = accountGrantStatus(layout.credentialsPath);
+    if (ready.ok) {
+      ui.ok('account', `connected to ${ready.issuer ?? 'DeepSeek'}`);
+      ui.blank();
+      ui.rule();
+      ui.ok('ready', 'everything is wired');
+      ui.cmd('pi');
+    } else {
+      ui.warn('account', 'not connected yet — this is the only step left');
+      const result = await ensureAccount({
+        layout,
+        ui,
+        env,
+        cliPath,
+        open: options.open === true && options.noOpen !== true,
+        restart: false,
+        announce: false,
+      });
+      ui.blank();
+      ui.rule();
+      if (result.ok) {
+        ui.ok('ready', 'everything is wired');
+        ui.cmd('pi');
+      } else {
+        ui.aside('Pi is installed; it will ask for the account until you sign in.');
+        ui.cmd('pi-dsh-bridge account');
+      }
+    }
+    ui.blank();
+
     if (ui.json) {
       ui.emitJson({
         command: 'install',
         ok: true,
-        dryRun: true,
+        dryRun: false,
         versions,
         journal: layout.journalPath,
         warnings,
         changes: plan.map((change) => ({ path: change.path, action: change.action, detail: change.detail })),
       });
     }
+
     return 0;
+  } finally {
+    if (lock) lock.release();
   }
-
-  if (changed.length > 0) {
-    const batch = createBackupBatch({ backupsDir: layout.backupsDir });
-    const entries = [];
-    for (const change of changed) {
-      const current = readIfExists(change.path);
-      const before = current.exists ? batch.backup(change.path) : null;
-      fs.mkdirSync(path.dirname(change.path), { recursive: true });
-      // Atomic: Pi executes the token helper and parses models.json while it
-      // runs, so these files must never be observable half-written.
-      writeFileAtomic(change.path, change.bytes, { mode: change.fileMode });
-      entries.push({
-        path: change.path,
-        before,
-        after: change.kind === 'settings' ? 'settings-keys' : 'file-copy',
-      });
-    }
-
-    const next = journal
-      ? { ...journal, versions, entries: mergeEntries(journal, entries) }
-      : createJournal({ versions });
-    if (!journal) next.entries = mergeEntries(next, entries);
-    const settingsPlan = plan.find((change) => change.kind === 'settings');
-    next.settings = journalSettings(journal, settingsPlan.current.data, settingsPlan.desired);
-    writeJournal(layout.journalPath, next);
-  }
-
-  ui.line('install');
-  for (const change of plan) {
-    ui.line(`  ${change.action.padEnd(9)} ${change.path}  ${change.detail}`);
-  }
-  for (const warning of warnings) ui.warn('note', warning);
-  ui.line(
-    changed.length === 0
-      ? `nothing to do: ${plan.length} path(s) already match (journal unchanged)`
-      : `${changed.length} path(s) changed, journal at ${layout.journalPath}`,
-  );
-
-  // Everything is on disk. What is left is the one step only the user can take:
-  // signing in to DeepSeek inside the dsh web panel. So do not hand them a
-  // to-do list — open the panel, hand over the URL and detect the account.
-  ui.blank();
-  const ready = accountGrantStatus(layout.credentialsPath);
-  if (ready.ok) {
-    ui.ok('account', `connected to ${ready.issuer ?? 'DeepSeek'}`);
-    ui.blank();
-    ui.rule();
-    ui.ok('ready', 'everything is wired');
-    ui.cmd('pi');
-  } else {
-    ui.warn('account', 'not connected yet — this is the only step left');
-    const result = await ensureAccount({
-      layout,
-      ui,
-      env,
-      cliPath,
-      open: options.open === true && options.noOpen !== true,
-      restart: false,
-      announce: false,
-    });
-    ui.blank();
-    ui.rule();
-    if (result.ok) {
-      ui.ok('ready', 'everything is wired');
-      ui.cmd('pi');
-    } else {
-      ui.aside('Pi is installed; it will ask for the account until you sign in.');
-      ui.cmd('pi-dsh-bridge account');
-    }
-  }
-  ui.blank();
-
-  if (ui.json) {
-    ui.emitJson({
-      command: 'install',
-      ok: true,
-      dryRun: false,
-      versions,
-      journal: layout.journalPath,
-      warnings,
-      changes: plan.map((change) => ({ path: change.path, action: change.action, detail: change.detail })),
-    });
-  }
-
-  return 0;
 }
 
 export const INSTALL_HELP = `Usage: pi-dsh-bridge install [options]
