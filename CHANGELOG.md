@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The launcher no longer dies on macOS before it starts the web panel. It
+  joined the PATH entries with `paste -sd:`, a bundled short-option form
+  that the BSD `paste` rejects with a usage message, so on macOS the script
+  aborted on its first line. The entries are now joined with `tr`/`sed`,
+  which behave the same on both systems.
+
 ## [0.2.0] - 2026-11-02
 
 The release that makes the bridge a product rather than a recipe: one DeepSeek
