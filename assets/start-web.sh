@@ -14,7 +14,10 @@ set -euo pipefail
 # vision-git's shim was uninstalled; keep it out of PATH if a stale entry survives.
 # `grep -v` exits 1 when it filters nothing, which under `pipefail` would abort
 # the launcher on a machine that never had the shim.
-clean_path="$(printf '%s' "$PATH" | tr ':' '\n' | { grep -v 'vision-git/shim' || true; } | paste -sd:)"
+# The lines are joined with `tr`/`sed`, not `paste -sd:`: the bundled
+# short-option form is a GNU extension that the BSD paste on macOS rejects
+# with a usage message, and the launcher would die there before starting.
+clean_path="$(printf '%s' "$PATH" | tr ':' '\n' | { grep -v 'vision-git/shim' || true; } | tr '\n' ':' | sed 's/:$//')"
 export PATH="$clean_path"
 
 # Pi reads its own home from PI_CODING_AGENT_DIR. PI_HOME stays as an alias.

@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new session with
   `agent-preset/invalid: Cannot read properties of undefined (reading 'parent')`,
   which read like a bridge failure and was not one.
+- The launcher no longer dies on macOS before it starts the web panel. It
+  joined the PATH entries with `paste -sd:`, a bundled short-option form
+  that the BSD `paste` rejects with a usage message, so on macOS the script
+  aborted on its first line. The entries are now joined with `tr`/`sed`,
+  which behave the same on both systems.
 
 ## [0.2.0] - 2026-11-02
 
