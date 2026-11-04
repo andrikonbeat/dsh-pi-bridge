@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { compareVersions, isNodeSupported, nodeCheck, probeCommand } from '../src/preflight.js';
-import { cleanupSandbox, createSandbox } from './helpers.js';
+import { cleanupSandbox, createSandbox, sandboxEnv } from './helpers.js';
 
 describe('version comparison', () => {
   it('orders two parsable versions', () => {
@@ -49,7 +49,11 @@ describe('command probing', () => {
   after(() => cleanupSandbox(sandbox));
 
   it('reports the version of a command that answers', () => {
-    const result = probeCommand('dsh', { env: sandbox.env });
+    // The sandbox's own PATH, so the probe finds the stub `dsh` and not
+    // whatever `dsh` happens to be installed on the machine running the
+    // suite. Probing the ambient PATH makes the test pass or fail depending
+    // on the machine, which is not a property of the code under test.
+    const result = probeCommand('dsh', { env: sandboxEnv(sandbox) });
     assert.equal(result.found, true);
     assert.equal(typeof result.path, 'string');
     assert.match(result.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
@@ -73,7 +77,7 @@ describe('command probing', () => {
 
   it('reports a permission failure as an actionable error (S4-11)', () => {
     const result = probeCommand('pi', {
-      env: sandbox.env,
+      env: sandboxEnv(sandbox),
       spawn: () => ({ error: Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }) }),
     });
     assert.equal(result.found, true);
