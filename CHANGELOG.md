@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `doctor` reports a new `dsh-preset` check: whether the installed `dsh` can
+  mount an agent preset at all. A version outside the compatibility matrix is
+  still only a warning; a version that cannot mount a preset is a failure.
+- A "Known-broken dsh builds" table in `docs/compatibility.md`, and a
+  troubleshooting entry for the exact
+  `agent-preset/invalid: Cannot read properties of undefined (reading 'parent')`
+  failure.
+
+### Fixed
+
+- `start-web.sh` refuses to start `dsh 0.2.2-alpha.2`, whose preset registry
+  cannot mount any preset. The web panel used to open and then reject every
+  new session with
+  `agent-preset/invalid: Cannot read properties of undefined (reading 'parent')`,
+  which read like a bridge failure and was not one.
+
 ## [0.2.0] - 2026-11-02
 
 The release that makes the bridge a product rather than a recipe: one DeepSeek

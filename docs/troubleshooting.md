@@ -88,6 +88,20 @@ The skill-registry refresh costs about 20 s; MCP servers cost the rest. The
 
 ## dsh side
 
+**`agent-preset/invalid: Cannot read properties of undefined (reading 'parent')`.**
+The installed `dsh` cannot mount an agent preset, so the web panel opens but
+refuses to create any session. This is a defect in `dsh 0.2.2-alpha.2`, not in
+the bridge: its preset registry reads a cordis service implementation's
+`fiber`, and the cordis build that version resolves to today stores the
+owning context instead. Upgrade the harness:
+
+```bash
+npm install -g @deepseek-ai/dsh@0.2.2-alpha.3
+```
+
+`doctor` reports it as the `dsh-preset` check and fails, and `start-web.sh`
+refuses to start that build instead of handing over a dead panel.
+
 **`dsh web` hangs or logs 403.**
 Two causes were found historically: a `vision-git` shim in `PATH` (removed, and
 `start-web.sh` filters it out if a stale entry survives), and the account

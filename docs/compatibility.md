@@ -14,6 +14,28 @@ failure can be attributed quickly instead of guessed at.
 is reported as `warn`, not `fail`: the tooling keeps working and you are told
 what was tested.
 
+## Known-broken dsh builds
+
+A version outside the matrix is **untested**. A version in this table is
+**broken**: it starts, and then refuses every new session.
+
+| `@deepseek-ai/dsh` | Symptom | Fix |
+| --- | --- | --- |
+| `0.2.2-alpha.2` | `agent-preset/invalid: Cannot read properties of undefined (reading 'parent')` | `npm install -g @deepseek-ai/dsh@0.2.2-alpha.3` |
+
+`0.2.2-alpha.2` ships `dsh-agent-preset-registry@0.2.2-alpha.2`, which decides
+which preset owns a service by reading that service implementation's `fiber`,
+and asks cordis for `~4.0.6-alpha.1`. That range resolves today to cordis
+4.0.6-alpha.2, whose service implementations carry the owning `ctx` instead
+of `fiber`. The registry therefore sees an implementation with no fiber,
+throws while mounting the preset, and every preset ends up unusable — so the
+web panel opens and cannot create a session. `0.2.2-alpha.3` ships the
+registry that reads `impl.ctx.fiber` and is not affected; `0.2.1-rc.5` pairs
+cordis `~4.0.5` with the matching registry and is not affected either.
+
+`doctor` fails on a broken build (the `dsh-preset` check), and `start-web.sh`
+refuses to start it.
+
 ## What is actually coupled
 
 Only four things about `dsh` matter to this project, and all four are checked

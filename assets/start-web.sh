@@ -24,6 +24,20 @@ DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/pi-dsh-bridge}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 
+# A dsh that cannot mount an agent preset leaves the panel open but unable to
+# create a single session: the preset registry throws while mounting and the
+# UI reports `agent-preset/invalid: Cannot read properties of undefined
+# (reading 'parent')`. Refuse to start that build instead of handing over a
+# dead panel. The list mirrors KNOWN_BROKEN_DSH_VERSIONS in src/compat.js.
+DSH_VERSION="$(dsh --version 2>/dev/null | head -n 1 | tr -d '\r' | sed 's/^v//' | awk '{print $1}' || true)"
+if [ "$DSH_VERSION" = "0.2.2-alpha.2" ]; then
+  echo "ERROR: dsh $DSH_VERSION cannot mount agent presets." >&2
+  echo "       New sessions fail with: agent-preset/invalid: Cannot read properties of undefined (reading 'parent')" >&2
+  echo "  Fix: npm install -g @deepseek-ai/dsh@0.2.2-alpha.3" >&2
+  echo "        (0.2.1-rc.5 is the latest release candidate and is not affected)" >&2
+  exit 1
+fi
+
 # Is the dsh account grant usable? The helper installed next to the CLI knows
 # the paths; the CLI itself is the fallback.
 ACCOUNT_OK=0

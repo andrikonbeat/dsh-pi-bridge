@@ -36,10 +36,11 @@ describe('doctor', () => {
         assert.equal(typeof check.detail, 'string');
         assert.equal(typeof check.title, 'string');
       }
-      for (const id of ['node', 'pi', 'dsh', 'settings', 'credential', 'dsh-account', 'bridge', 'token-helper', 'launcher', 'wrapper', 'dsh-route', 'state']) {
+      for (const id of ['node', 'pi', 'dsh', 'dsh-preset', 'settings', 'credential', 'dsh-account', 'bridge', 'token-helper', 'launcher', 'wrapper', 'dsh-route', 'state']) {
         assert.ok(checkById(doc, id), `missing check: ${id}`);
       }
       assert.equal(checkById(doc, 'pi').status, 'ok');
+      assert.equal(checkById(doc, 'dsh-preset').status, 'ok');
       // Presence is not working: a stored key cannot be proven usable
       // offline, so it is reported as present and unproven.
       assert.equal(checkById(doc, 'credential').status, 'warn');
@@ -60,6 +61,22 @@ describe('doctor', () => {
       const pi = checkById(doc, 'pi');
       assert.equal(pi.status, 'fail');
       assert.match(pi.detail, /PATH/);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('fails when the dsh build cannot mount agent presets', () => {
+    const box = createSandbox();
+    try {
+      const result = run(['doctor', '--json'], box, { env: { FAKE_DSH_VERSION: '0.2.2-alpha.2' } });
+      assert.equal(result.status, 1, 'a dsh that cannot mount presets is a failure, not a warning');
+
+      const doc = JSON.parse(result.stdout);
+      const preset = checkById(doc, 'dsh-preset');
+      assert.equal(preset.status, 'fail');
+      assert.match(preset.detail, /agent-preset\/invalid/);
+      assert.match(preset.detail, /0\.2\.2-alpha\.3/);
     } finally {
       cleanupSandbox(box);
     }
