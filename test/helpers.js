@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -195,6 +195,27 @@ export function run(args, sandbox, extra = {}) {
   };
 }
 
+/** Invoke bin/cli.js with custom stdin and return {status, stdout, stderr}. */
+export function runWithStdin(args, sandbox, stdin = '', extra = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args], {
+      cwd: sandbox.root,
+      env: sandboxEnv(sandbox, extra.env),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    // Give the child a moment to print the prompt before sending input
+    setTimeout(() => {
+      child.stdin.end(stdin);
+    }, 500);
+    let stdoutData = '';
+    let stderrData = '';
+    child.stdout.on('data', (d) => { stdoutData += d; });
+    child.stderr.on('data', (d) => { stderrData += d; });
+    child.on('close', (code) => resolve({ status: code, stdout: stdoutData, stderr: stderrData }));
+    child.on('error', (err) => resolve({ status: 1, stdout: '', stderr: err.message }));
+  });
+}
+
 function hashFile(file) {
   return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -255,4 +276,20 @@ export function snapshotDiff(a, b) {
 
 export function listFiles(root) {
   return [...snapshotTree(root).keys()].filter((key) => !key.endsWith('/')).sort();
+}
+
+/** A fake stdout that records what a user would see. */
+export function recorder({ isTTY = false, columns = 80 } = {}) {
+  const chunks = [];
+  return {
+    isTTY,
+    columns,
+    write: (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    },
+    get text() {
+      return chunks.join('');
+    },
+  };
 }

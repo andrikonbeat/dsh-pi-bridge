@@ -92,12 +92,11 @@ export function createUi({
   unicode,
 } = {}) {
   const dumb = env.TERM === 'dumb';
+  const forceInteractive = env.PI_DSH_BRIDGE_FORCE_INTERACTIVE === '1';
+  const isInteractive = forceInteractive || (stdin.isTTY === true && stdout.isTTY === true);
   const useColor =
     color ??
-    (stdout.isTTY === true &&
-      !dumb &&
-      env.NO_COLOR === undefined &&
-      env.FORCE_COLOR !== '0');
+    (isInteractive && !dumb && env.NO_COLOR === undefined && env.FORCE_COLOR !== '0');
   const useUnicode = unicode ?? !dumb;
   const symbols = useUnicode ? SYMBOLS : ASCII_SYMBOLS;
   const width = clampWidth(stdout.columns);
@@ -230,15 +229,48 @@ export function createUi({
      *
      * Returns false immediately when there is no interactive terminal, so a
      * piped or CI run never hangs waiting for a keypress that cannot come.
+     * Also resolves false on EOF (Ctrl-D) or stream close.
      */
     async waitForEnter(prompt = 'Press Enter when you are done') {
-      if (json || stdin.isTTY !== true || !stdout.isTTY) return false;
+      if (json || !isInteractive) return false;
       stdout.write(`\n  ${paint('gray', prompt)} ${paint('gray', '›')} `);
       return new Promise((resolve) => {
         const done = () => {
+          cleanup();
+          resolve(true);
+        };
+        const onEnd = () => {
+          cleanup();
+          resolve(false);
+        };
+        const cleanup = () => {
+          stdin.removeListener('data', done);
+          stdin.removeListener('end', onEnd);
+          stdin.removeListener('close', onEnd);
+          stdin.pause();
+        };
+        stdin.on('end', onEnd);
+        stdin.on('close', onEnd);
+        stdin.resume();
+        stdin.once('data', done);
+      });
+    },
+
+    /**
+     * Ask for confirmation in an interactive TTY.
+     * Returns true only if the user explicitly answers 'y' or 'Y'.
+     * Default is false (safe by default).
+     * In non-interactive or --json mode, returns false without prompting.
+     */
+    async confirm(prompt = 'Proceed?') {
+      if (json || !isInteractive) return false;
+      stdout.write(`\n  ${paint('gray', prompt)} ${paint('gray', '[y/N]')} `);
+      return new Promise((resolve) => {
+        const done = (chunk) => {
+          const answer = chunk.toString().trim().toLowerCase();
           stdin.removeListener('data', done);
           stdin.pause();
-          resolve(true);
+          resolve(answer === 'y' || answer === 'yes');
         };
         stdin.resume();
         stdin.once('data', done);
