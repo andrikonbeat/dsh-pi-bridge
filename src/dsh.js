@@ -45,13 +45,33 @@ export function dumpConfig({ dshPath, env = process.env, patchPath = null, timeo
   return stdout;
 }
 
-/** The block belonging to one patch/bundle entry, as raw lines. */
+/**
+ * The id a patch/bundle entry line declares, or null when the line is not one.
+ *
+ * A trailing `#` comment after the value is not part of the id, and a
+ * commented-out entry never declares anything: only `id:` at the start of a
+ * line (after an optional list marker) counts.
+ */
+function idOnLine(line) {
+  const match = /^\s*(?:-\s*)?id:\s*(?:"([^"]*)"|'([^']*)'|([^\s#]+))\s*(?:#.*)?$/.exec(line);
+  if (!match) return null;
+  return match[1] ?? match[2] ?? match[3];
+}
+
+/**
+ * The block belonging to one patch/bundle entry, as raw lines.
+ *
+ * The winning entry is the last one whose `id` matches, not the first: dsh
+ * applies every overlay after the bundles and after the user layer, and an
+ * entry whose id already exists replaces it. Reading the first match would
+ * report the entry the overlay was written to replace.
+ */
 function blockLines(document, id) {
   const lines = document.split(/\r?\n/);
-  const start = lines.findIndex((line) => {
-    const match = /^(?:-\s*)?id:\s*["']?([^"'\s]+)["']?\s*$/.exec(line.trim());
-    return match ? match[1] === id : false;
-  });
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (idOnLine(lines[index]) === id) start = index;
+  }
   if (start === -1) return null;
   const block = [];
   for (let index = start; index < lines.length; index += 1) {
@@ -83,6 +103,11 @@ export function readEffectiveDefaultModel(document) {
  * Probe the effective route. Never throws: a broken probe is data, not an
  * exception, so `doctor` and `install` can report it.
  *
+ * Fails closed. An `agent-default-model` entry that exists but names no
+ * provider or no model is not a route this bridge can compare against, and
+ * reporting it as `ok` would let every caller print a placeholder instead of
+ * the reason.
+ *
  * Returns { ok, provider, model, raw, error }.
  */
 export function probe({ dshPath, env = process.env, patchPath = null }) {
@@ -98,6 +123,24 @@ export function probe({ dshPath, env = process.env, patchPath = null }) {
         error: 'the effective config has no agent-default-model entry',
       };
     }
+    if (!effective.provider) {
+      return {
+        ok: false,
+        provider: null,
+        model: null,
+        raw,
+        error: 'the effective config has no agent-default-model provider',
+      };
+    }
+    if (!effective.model) {
+      return {
+        ok: false,
+        provider: null,
+        model: null,
+        raw,
+        error: 'the effective config has no agent-default-model model',
+      };
+    }
     return { ok: true, provider: effective.provider, model: effective.model, raw, error: null };
   } catch (error) {
     return { ok: false, provider: null, model: null, raw: null, error: error.message };
@@ -110,7 +153,13 @@ export function diverges(result, { provider = REQUIRED_PROVIDER, model = REQUIRE
   return result.provider !== provider || result.model !== model;
 }
 
+/**
+ * One line describing a probe result.
+ *
+ * A successful probe always carries both values, so a result missing one is
+ * not described with a `?` placeholder: it is unknown, and says so.
+ */
 export function describeRoute(result) {
-  if (!result.ok) return 'unknown';
-  return `provider: ${result.provider ?? '?'}, model: ${result.model ?? '?'}`;
+  if (!result.ok || !result.provider || !result.model) return 'unknown';
+  return `provider: ${result.provider}, model: ${result.model}`;
 }
