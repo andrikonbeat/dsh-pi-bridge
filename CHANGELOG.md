@@ -6,8 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Hardening: the bridge can no longer destroy work it did not create, and the
+things it reported about a broken credential or a lost web panel now match what
+is actually on disk.
+
 ### Fixed
 
+- `uninstall` keeps any file whose current bytes are not provably the bytes
+  `install` wrote, and names the reason, instead of deleting the file the user
+  edited. Journal entries now record a `sha256` of what was written, and the
+  journal is written before each path is mutated, so an interrupted `install`
+  is still recoverable.
+- `uninstall` restores only the settings keys `install` captured, so keys added
+  afterwards survive; the file is deleted only when `install` created it and
+  nothing is left in it.
+- Two mutating runs can no longer interleave: every command that writes takes a
+  `journal.lock`, the backup stamp directory is claimed exclusively, and a lock
+  whose owner is gone is taken over instead of blocking recovery.
+- `readJournal` rejects a version it does not know and entries that are not
+  shaped like journal entries, rather than acting on them.
 - `models.json` is written with every shell argument POSIX single-quoted, so
   a program path containing spaces, `$`, backticks, quotes or newlines is
   passed to the token command literally instead of being re-interpreted by
