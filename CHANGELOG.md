@@ -25,6 +25,30 @@ is actually on disk.
   whose owner is gone is taken over instead of blocking recovery.
 - `readJournal` rejects a version it does not know and entries that are not
   shaped like journal entries, rather than acting on them.
+- `models.json` is written with every shell argument POSIX single-quoted, so
+  a program path containing spaces, `$`, backticks, quotes or newlines is
+  passed to the token command literally instead of being re-interpreted by
+  the shell.
+- `models.json` with a UTF-8 BOM is accepted instead of being reported as
+  invalid JSON.
+- A `models.json` whose `providers` key is an array or a string is now
+  rejected with a clear error and left untouched, instead of being rewritten
+  as an object with numeric keys.
+- Atomic writes no longer leave a `.tmp-*` file behind when the write, the
+  permission change or the sync fails, and the parent directory is now synced
+  after the rename so the new file survives a crash.
+
+### Changed
+
+- `--json` now emits a JSON document for `--version`, `--help`, `help` and
+  usage errors, so machine consumers never receive mixed output. Usage errors
+  report `{ok:false,"error":"...","code":2}` on stdout with exit code 2.
+- `--` ends option parsing; the tokens after it are positional arguments.
+- A value that starts with `-` is accepted in both the `--opt=value` and the
+  `--opt value` form.
+- `-y` / `--yes` now actually asks for confirmation on an interactive
+  terminal for `install`, `uninstall` and `sync`. The default answer is no,
+  so `uninstall` without `--yes` is safe by default.
 
 ## [0.2.0] - 2026-11-02
 

@@ -94,7 +94,7 @@ describe('the shared-account bridge', () => {
       const header = provider.headers['x-dsh-auth-token'];
       assert.ok(header.startsWith('!'), 'the account header is a command');
       assert.ok(path.isAbsolute(helperPath(box)), 'the command points at an absolute path');
-      assert.match(header, /token --dsh-home/);
+      assert.match(header, /'token' '--dsh-home'/);
       assert.equal(provider.baseUrl, 'https://api.deepseek.com');
       assert.equal(provider.api, 'openai-completions');
 
@@ -345,6 +345,65 @@ describe('the shared-account bridge', () => {
       const doc = JSON.parse(run(['doctor', '--json'], box).stdout);
       const bridge = doc.checks.find((check) => check.id === 'bridge');
       assert.equal(bridge.status, 'ok');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('sync accepts a models.json with a UTF-8 BOM (S4-4)', () => {
+    const box = createSandbox();
+    try {
+      writeCredentials(box);
+      fs.writeFileSync(
+        modelsPath(box),
+        Buffer.concat([
+          Buffer.from([0xef, 0xbb, 0xbf]),
+          Buffer.from(`${JSON.stringify({ providers: {} }, null, 2)}\n`),
+        ]),
+      );
+
+      const result = run(['sync'], box);
+      assert.equal(result.status, 0, result.stderr);
+
+      // The BOM is gone and the file is plain JSON again.
+      const raw = fs.readFileSync(modelsPath(box));
+      assert.notDeepEqual(Array.from(raw.subarray(0, 3)), [0xef, 0xbb, 0xbf]);
+      assert.ok(providerOf(box), 'the provider was wired');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('sync refuses a models.json whose providers is an array, and changes nothing (S4-5)', () => {
+    const box = createSandbox();
+    try {
+      writeCredentials(box);
+      const original = '{\n  "providers": []\n}\n';
+      fs.writeFileSync(modelsPath(box), original);
+
+      const result = run(['sync'], box);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /providers` must be an object, not an array/);
+      assert.equal(
+        fs.readFileSync(modelsPath(box), 'utf8'),
+        original,
+        'the corrupt file is left exactly as it was',
+      );
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('install refuses a models.json whose providers is a string, and changes nothing (S4-5)', () => {
+    const box = createSandbox();
+    try {
+      const original = '{\n  "providers": "nope"\n}\n';
+      fs.writeFileSync(modelsPath(box), original);
+
+      const result = run(['install', '--yes'], box);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /providers` must be an object, not string/);
+      assert.equal(fs.readFileSync(modelsPath(box), 'utf8'), original);
     } finally {
       cleanupSandbox(box);
     }
