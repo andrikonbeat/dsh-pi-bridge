@@ -126,11 +126,12 @@ function helperChange({ layout, cliPath }) {
  * grant was worse — Pi then fell back silently to its built-in `deepseek`
  * provider, i.e. a different wallet, and the user saw a bare 402 with no hint.
  */
-function modelsChange({ layout, grant }) {
+function modelsChange({ layout, grant, warnings }) {
   const current = loadModels(layout.modelsPath);
   const onDisk = readIfExists(layout.modelsPath);
   const provider = sharedProvider({ program: layout.tokenHelperPath, dshHome: layout.dshHome });
-  const { merged } = applySharedProvider(current.data, provider);
+  const { merged, warning } = applySharedProvider(current.data, provider);
+  if (warning) warnings.push(warning);
   const bytes = Buffer.from(renderModels(merged));
   const action = !current.exists
     ? 'created'
@@ -231,7 +232,7 @@ function planChanges({ layout, provider, model, dshPath, env, warnings, grant, c
     fileChange({ file: layout.launcherPath, asset: LAUNCHER_ASSET, mode: FILE_MODE }),
     fileChange({ file: layout.wrapperPath, asset: WRAPPER_ASSET, mode: FILE_MODE }),
     helperChange({ layout, cliPath }),
-    modelsChange({ layout, grant }),
+    modelsChange({ layout, grant, warnings }),
     overlayChange({ layout, dshPath, env, warnings }),
   ];
 }

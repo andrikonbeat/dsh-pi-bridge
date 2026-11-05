@@ -123,19 +123,48 @@ export function loadModels(file) {
 }
 
 /**
+ * The warning the install plan carries when the `deepseek` entry on disk is
+ * the user's own rather than the one this bridge writes.
+ *
+ * Replacing it silently would throw away a provider someone configured by
+ * hand — a different base URL, a different model list, an API key. The bridge
+ * still needs its own entry to route through the account, so the two fields
+ * that describe what the user meant are carried over and the fact is reported.
+ */
+export const SHARED_PROVIDER_WARNING =
+  'the existing "deepseek" provider is not the one this bridge writes; its `models` and `name` are preserved';
+
+/**
  * Write the shared provider, preserving every other provider and every other
  * key in the file. The built-in `deepseek` provider is replaced in place, so
  * its position in the file does not change.
+ *
+ * Returns `{ merged, existed, warning }`:
+ *   - `existed` is true when a `deepseek` entry was already there;
+ *   - `warning` is `SHARED_PROVIDER_WARNING` when that entry diverges from the
+ *     one this bridge writes, and null otherwise;
+ *   - the diverging entry's `name` and `models` are carried into the merged
+ *     entry when present, so a hand-written model list still reaches Pi.
  */
 export function applySharedProvider(current, provider) {
   const data = current ?? {};
   const providers = { ...(data.providers ?? {}) };
   const existed = Object.prototype.hasOwnProperty.call(providers, SHARED_PROVIDER_ID);
-  providers[SHARED_PROVIDER_ID] = provider;
+  const existing = existed && providers[SHARED_PROVIDER_ID] && typeof providers[SHARED_PROVIDER_ID] === 'object'
+    ? providers[SHARED_PROVIDER_ID]
+    : null;
+  const diverges = existed && !modelsMatch(data, provider);
+
+  const entry = { ...provider };
+  if (existing) {
+    if (Object.prototype.hasOwnProperty.call(existing, 'name')) entry.name = existing.name;
+    if (Object.prototype.hasOwnProperty.call(existing, 'models')) entry.models = existing.models;
+  }
+  providers[SHARED_PROVIDER_ID] = entry;
   // Keep the original key order of `providers`: replacing an existing key does
   // not move it, and a new key is appended.
   const merged = { ...data, providers };
-  return { merged, existed };
+  return { merged, existed, warning: diverges ? SHARED_PROVIDER_WARNING : null };
 }
 
 /** Two-space JSON with a trailing newline, matching the settings.json format. */
