@@ -38,6 +38,15 @@ is actually on disk.
   permission change or the sync fails, and the parent directory is now synced
   after the rename so the new file survives a crash.
 
+- An unparsable version no longer compares as equal to every other version.
+  `doctor` now reports it as not parsable, and `isNodeSupported` says no
+  instead of yes.
+- `doctor` reports why a program could not be probed: a process killed by a
+  signal is named as such, and a program that could not be spawned says what
+  to fix.
+- The token helper is only used when it is a regular executable file; a
+  directory or a file without the execute bit falls back to the CLI.
+
 ### Changed
 
 - `--json` now emits a JSON document for `--version`, `--help`, `help` and
