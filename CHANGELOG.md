@@ -24,7 +24,8 @@ is actually on disk.
   `journal.lock`, the backup stamp directory is claimed exclusively, and a lock
   whose owner is gone is taken over instead of blocking recovery.
 - `readJournal` rejects a version it does not know and entries that are not
-  shaped like journal entries, rather than acting on them.- `models.json` is written with every shell argument POSIX single-quoted, so
+  shaped like journal entries, rather than acting on them.
+- `models.json` is written with every shell argument POSIX single-quoted, so
   a program path containing spaces, `$`, backticks, quotes or newlines is
   passed to the token command literally instead of being re-interpreted by
   the shell.
@@ -36,6 +37,15 @@ is actually on disk.
 - Atomic writes no longer leave a `.tmp-*` file behind when the write, the
   permission change or the sync fails, and the parent directory is now synced
   after the rename so the new file survives a crash.
+
+- An unparsable version no longer compares as equal to every other version.
+  `doctor` now reports it as not parsable, and `isNodeSupported` says no
+  instead of yes.
+- `doctor` reports why a program could not be probed: a process killed by a
+  signal is named as such, and a program that could not be spawned says what
+  to fix.
+- The token helper is only used when it is a regular executable file; a
+  directory or a file without the execute bit falls back to the CLI.
 
 ### Changed
 
