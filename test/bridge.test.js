@@ -1,9 +1,13 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 
+import { resolveDshPort, startDshWeb, stopDshWeb } from '../src/dsh-web.js';
+import { applySharedProvider, sharedProvider } from '../src/models.js';
 import {
   cleanupSandbox,
   createSandbox,
@@ -47,6 +51,29 @@ function helperPath(sandbox) {
 
 function providerOf(sandbox) {
   return readJson(modelsPath(sandbox)).providers.deepseek;
+}
+
+/**
+ * A loopback port this test itself opened and closed again, so the panel
+ * probe below never talks to — or binds — a port owned by the host.
+ */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/** A stand-in launcher inside the sandbox, so nothing of the host is run. */
+function writeLauncher(box, body) {
+  const file = path.join(box.root, 'fake-web.sh');
+  fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  fs.chmodSync(file, 0o755);
+  return file;
 }
 
 describe('the shared-account bridge', () => {
@@ -380,5 +407,287 @@ describe('the shared-account bridge', () => {
     } finally {
       cleanupSandbox(box);
     }
+  });
+});
+
+describe('the dsh web panel', () => {
+  it('never signals a pid it cannot identify as the panel', () => {
+    const killed = [];
+    const result = stopDshWeb(3080, {
+      pid: 4242,
+      readCmdline: () => '/usr/bin/node /usr/lib/other-server.js --port 3080',
+      kill: (...args) => killed.push(args),
+    });
+
+    assert.deepEqual(killed, [], 'an unidentified pid is never signalled');
+    assert.equal(result.stopped, false);
+    assert.equal(
+      result.reason,
+      'pid 4242 on port 3080 is not the dsh web panel (/usr/bin/node /usr/lib/other-server.js --port 3080); not touching it',
+    );
+  });
+
+  it('reads the real /proc cmdline of a pid it did not spawn itself', async () => {
+    // A process this test owns, so nothing on the host is touched.
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], { stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => child.once('spawn', resolve));
+      const killed = [];
+      const result = stopDshWeb(3080, { pid: child.pid, kill: (...args) => killed.push(args) });
+      assert.deepEqual(killed, [], 'a node process is not the panel');
+      assert.equal(result.stopped, false);
+      assert.match(result.reason, new RegExp(`^pid ${child.pid} on port 3080 is not the dsh web panel \\(.+\\); not touching it$`));
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+
+  it('signals the pid when the cmdline is the installed launcher or mentions dsh web', () => {
+    const viaLauncher = [];
+    const launcher = '/opt/panel/start.sh';
+    const launched = stopDshWeb(3080, {
+      pid: 4243,
+      launcherPath: launcher,
+      readCmdline: () => `/bin/sh ${launcher}`,
+      kill: (...args) => viaLauncher.push(args),
+    });
+    assert.deepEqual(viaLauncher, [[4243, 'SIGTERM']]);
+    assert.deepEqual(launched, { stopped: true, pid: 4243 });
+
+    const viaCmdline = [];
+    const mentioned = stopDshWeb(3080, {
+      pid: 4244,
+      readCmdline: () => '/usr/local/bin/dsh web --port 3080',
+      kill: (...args) => viaCmdline.push(args),
+    });
+    assert.deepEqual(viaCmdline, [[4244, 'SIGTERM']]);
+    assert.equal(mentioned.stopped, true);
+  });
+
+  it('refuses to guess when the cmdline cannot be read at all', () => {
+    const killed = [];
+    const unreadable = stopDshWeb(3080, {
+      pid: 4245,
+      readCmdline: () => null,
+      kill: (...args) => killed.push(args),
+    });
+    assert.deepEqual(killed, []);
+    assert.equal(unreadable.stopped, false);
+    assert.match(unreadable.reason, /cmdline unreadable/);
+
+    const unknown = stopDshWeb(3080, { pid: null, readCmdline: () => 'ignored', kill: () => {} });
+    assert.equal(unknown.stopped, false);
+    assert.equal(unknown.reason, 'cannot identify the process listening on port 3080');
+  });
+
+  it('counts the panel as running when the port answers HTTP, even with 401', async () => {
+    const port = await freePort();
+    const server = http.createServer((request, response) => {
+      response.writeHead(401, { 'content-type': 'text/plain' });
+      response.end('sign in');
+    });
+    await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+    try {
+      const started = await startDshWeb({
+        launcherPath: path.join('/nonexistent', 'start-web.sh'),
+        env: {},
+        port,
+        timeoutMs: 2_000,
+      });
+      assert.equal(started.alreadyRunning, true);
+      assert.equal(started.url, null);
+      assert.equal(started.error, null);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it('never reports a foreign listener as an already-serving panel', async () => {
+    const port = await freePort();
+    const sockets = [];
+    const server = net.createServer((socket) => {
+      socket.on('error', () => {});
+      sockets.push(socket);
+    });
+    await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+    try {
+      const started = await startDshWeb({
+        launcherPath: path.join('/nonexistent', 'start-web.sh'),
+        env: {},
+        port,
+        timeoutMs: 2_000,
+      });
+      assert.equal(started.alreadyRunning, false);
+      assert.match(started.error, /not the dsh web panel/);
+      assert.ok(started.error.includes(String(port)), 'the message names the port');
+      assert.doesNotMatch(started.error, /already serving/);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it('kills the process group instead of leaving an orphan when no URL appears', async () => {
+    const box = createSandbox();
+    try {
+      const port = await freePort();
+      const launcherPath = writeLauncher(box, "printf 'panel started without a url\\n'");
+      const killed = [];
+      const started = await startDshWeb({
+        launcherPath,
+        env: { PATH: '/usr/bin:/bin' },
+        port,
+        timeoutMs: 10_000,
+        killGroup: (...args) => killed.push(args),
+      });
+
+      assert.equal(started.url, null);
+      assert.ok(started.pid > 0, 'the child was spawned');
+      assert.deepEqual(killed, [[-started.pid, 'SIGTERM']], 'the whole group is terminated');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('settles as soon as the launcher exits, even when it exits 0', async () => {
+    const box = createSandbox();
+    try {
+      const port = await freePort();
+      const launcherPath = writeLauncher(box, "printf 'the launcher gave up\\n'");
+      const began = Date.now();
+      const started = await startDshWeb({
+        launcherPath,
+        env: { PATH: '/usr/bin:/bin' },
+        port,
+        timeoutMs: 20_000,
+        killGroup: () => {},
+      });
+      const elapsed = Date.now() - began;
+
+      assert.equal(started.url, null);
+      assert.ok(elapsed < 5_000, `settled in ${elapsed}ms instead of waiting for the timeout`);
+      assert.match(started.error, /the launcher gave up/, 'the captured output is reported');
+      assert.doesNotMatch(started.error, /within 20s/);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('finds a sign-in URL split across two output chunks', async () => {
+    const box = createSandbox();
+    try {
+      const port = await freePort();
+      const launcherPath = writeLauncher(
+        box,
+        "printf 'http://127.0.0.1:3080/?tok'\nsleep 0.2\nprintf 'en=abc123\\n'",
+      );
+      const started = await startDshWeb({
+        launcherPath,
+        env: { PATH: '/usr/bin:/bin' },
+        port,
+        timeoutMs: 10_000,
+        killGroup: () => {},
+      });
+
+      assert.equal(started.url, 'http://127.0.0.1:3080/?token=abc123');
+      assert.equal(started.error, null);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('rejects a DSH_PORT that is not an integer between 1 and 65535, without rejecting', async () => {
+    const box = createSandbox();
+    try {
+      const marker = path.join(box.root, 'launched');
+      const launcherPath = writeLauncher(box, `printf launched > '${marker}'`);
+      for (const bad of ['0', 'abc', '65536', '', '-1', '3080.5']) {
+        const started = await startDshWeb({ launcherPath, env: { DSH_PORT: bad }, timeoutMs: 1_000 });
+        assert.equal(started.url, null);
+        assert.equal(started.alreadyRunning, false);
+        assert.equal(started.error, `DSH_PORT must be an integer between 1 and 65535, got "${bad}"`);
+      }
+      assert.equal(fs.existsSync(marker), false, 'nothing was spawned for an invalid port');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('accepts exactly the port boundaries and rejects everything else', () => {
+    assert.deepEqual(resolveDshPort('1'), { port: 1, error: null });
+    assert.deepEqual(resolveDshPort('65535'), { port: 65535, error: null });
+    assert.deepEqual(resolveDshPort(undefined, {}), { port: 3080, error: null });
+    assert.deepEqual(resolveDshPort(3080), { port: 3080, error: null });
+    for (const bad of ['0', '65536', '-1', '1.5', 'abc', '', ' 3080']) {
+      assert.equal(resolveDshPort(bad).error, `DSH_PORT must be an integer between 1 and 65535, got "${bad}"`);
+    }
+  });
+
+  it('uses a valid DSH_PORT as given', async () => {
+    const box = createSandbox();
+    try {
+      const port = await freePort();
+      const seen = path.join(box.root, 'port.txt');
+      const launcherPath = writeLauncher(
+        box,
+        `printf '%s' "$DSH_PORT" > '${seen}'\nprintf 'http://127.0.0.1:${port}/?token=deadbeef\\n'`,
+      );
+      const started = await startDshWeb({
+        launcherPath,
+        env: { DSH_PORT: String(port), PATH: '/usr/bin:/bin' },
+        timeoutMs: 10_000,
+        killGroup: () => {},
+      });
+
+      assert.equal(started.port, port);
+      assert.equal(started.url, `http://127.0.0.1:${port}/?token=deadbeef`);
+      assert.equal(fs.readFileSync(seen, 'utf8'), String(port));
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+});
+
+describe('the shared provider plan', () => {
+  const provider = sharedProvider({ program: '/home/user/.local/bin/pi-dsh-token', dshHome: '/home/user/.dsh' });
+
+  it('warns instead of replacing a hand-written deepseek provider in silence', () => {
+    const current = {
+      providers: {
+        deepseek: {
+          name: 'DeepSeek (mine)',
+          baseUrl: 'https://api.deepseek.com',
+          api: 'openai-completions',
+          apiKey: 'sk-user-owned-key',
+          models: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }],
+        },
+      },
+    };
+
+    const plan = applySharedProvider(current, provider);
+
+    assert.equal(plan.existed, true);
+    assert.equal(
+      plan.warning,
+      'the existing "deepseek" provider is not the one this bridge writes; its `models` and `name` are preserved',
+    );
+    const merged = plan.merged.providers.deepseek;
+    assert.deepEqual(merged.models, [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }]);
+    assert.equal(merged.name, 'DeepSeek (mine)');
+    assert.equal(merged.headers['x-dsh-auth-token'], provider.headers['x-dsh-auth-token']);
+    assert.ok(!JSON.stringify(plan.merged).includes('sk-user-owned-key'), 'the old api key is not kept');
+  });
+
+  it('says nothing when the entry is already the one this bridge writes', () => {
+    const plan = applySharedProvider({ providers: { deepseek: { ...provider } } }, provider);
+    assert.equal(plan.warning, null);
+    assert.deepEqual(plan.merged.providers.deepseek, provider);
+  });
+
+  it('says nothing when there is no deepseek provider yet', () => {
+    const plan = applySharedProvider({ providers: { mine: { baseUrl: 'https://example.test' } } }, provider);
+    assert.equal(plan.existed, false);
+    assert.equal(plan.warning, null);
+    assert.deepEqual(plan.merged.providers.deepseek, provider);
   });
 });

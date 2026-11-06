@@ -1,6 +1,12 @@
 import { fingerprint } from './pi-auth.js';
 import { grantState } from './dsh-account.js';
-import { DEFAULT_PORT, openInBrowser, startDshWeb, stopDshWeb, stopPanelGroup } from './dsh-web.js';
+import {
+  openInBrowser,
+  resolveDshPort,
+  startDshWeb,
+  stopDshWeb,
+  stopPanelGroup,
+} from './dsh-web.js';
 import { JournalError, readJournal } from './journal.js';
 import { persistSharedProvider, wireSharedProvider } from './commands/sync.js';
 
@@ -18,6 +24,17 @@ import { persistSharedProvider, wireSharedProvider } from './commands/sync.js';
  */
 
 const SIGN_IN_HINT = 'Sign in with DeepSeek, then come back here.';
+
+/**
+ * The fingerprint of the account a state names, or `null` when it names none.
+ *
+ * A state that is not `usable` has no token, so this is the only place an
+ * account identity is derived: two `usable` states can be compared, and no
+ * other pair is ever compared at all.
+ */
+function accountFingerprint(state) {
+  return state.state === 'usable' ? fingerprint(state.token) : null;
+}
 
 /** The state returned when the user interrupts the wait. */
 const ABORTED_STATE = {
@@ -110,7 +127,12 @@ export async function waitForGrant(
  * That is why the URL is always printed as text, whatever `open` says.
  */
 async function presentSignIn({ layout, ui, env, open, restart, interactive, before, signal }) {
-  const port = Number(env.DSH_PORT) || DEFAULT_PORT;
+  const resolved = resolveDshPort(undefined, env);
+  if (resolved.error) {
+    ui.error(resolved.error);
+    return { ok: false, reason: 'bad-port', url: null };
+  }
+  const port = resolved.port;
   let url = null;
   let started = null;
 
@@ -130,7 +152,7 @@ async function presentSignIn({ layout, ui, env, open, restart, interactive, befo
   }
 
   if (restart) {
-    const stopped = stopDshWeb(port);
+    const stopped = stopDshWeb(port, { launcherPath: layout.launcherPath });
     if (!stopped.stopped) {
       ui.warn('restart', stopped.reason);
     } else {
@@ -253,8 +275,8 @@ export async function ensureAccount({
   }
   if (plan.changed) persistSharedProvider({ layout, plan, journal });
 
-  const previous = before.token ? fingerprint(before.token) : null;
-  const current = presented.state.token ? fingerprint(presented.state.token) : null;
+  const previous = accountFingerprint(before);
+  const current = accountFingerprint(presented.state);
   const accountChanged = previous !== null && current !== null && previous !== current;
 
   ui.ok('account', `connected to ${presented.state.issuer ?? 'DeepSeek'}`);
