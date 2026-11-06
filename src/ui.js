@@ -62,15 +62,135 @@ function clampWidth(columns, max = 76, min = 40) {
   return Math.max(min, Math.min(max, usable));
 }
 
-/** Visible length, ignoring ANSI escapes. */
-function visibleLength(text) {
-  return text.replace(/\u001b\[[0-9;]*m/g, '').length;
+const ANSI_ESCAPE = /\u001b\[[0-9;]*m/g;
+const COMBINING_MARK = /[\p{Mn}\p{Me}]/u;
+const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
+const EXTENDED_PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
+const EMOJI_MODIFIER = /[\u{1F3FB}-\u{1F3FF}]/u;
+const REGIONAL_INDICATOR = /[\u{1F1E6}-\u{1F1FF}]/gu;
+const ZWJ = '\u200d';
+const EMOJI_PRESENTATION_SELECTOR = '\ufe0f';
+const TEXT_PRESENTATION_SELECTOR = '\ufe0e';
+const KEYCAP = '\u20e3';
+const graphemeSegmenter =
+  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter('en', { granularity: 'grapheme' })
+    : null;
+
+function stripAnsi(text) {
+  return text.replace(ANSI_ESCAPE, '');
 }
 
-function truncate(text, width) {
-  if (visibleLength(text) <= width) return text;
-  if (width <= 1) return text.slice(0, width);
-  return `${text.slice(0, width - 1)}…`;
+function graphemeClusters(text) {
+  if (!graphemeSegmenter) return Array.from(text);
+  return Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
+}
+
+function isWideCodePoint(codePoint) {
+  return (
+    (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+    (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  );
+}
+
+function isEmojiPresentationCluster(cluster) {
+  if (cluster.includes(TEXT_PRESENTATION_SELECTOR)) return false;
+  if (EMOJI_PRESENTATION.test(cluster)) return true;
+  if (cluster.includes(EMOJI_PRESENTATION_SELECTOR)) {
+    return EXTENDED_PICTOGRAPHIC.test(cluster) || cluster.includes(KEYCAP);
+  }
+  if (cluster.includes(ZWJ) && EXTENDED_PICTOGRAPHIC.test(cluster)) return true;
+  if (EMOJI_MODIFIER.test(cluster)) return true;
+  return (cluster.match(REGIONAL_INDICATOR)?.length ?? 0) >= 2;
+}
+
+function clusterDisplayWidth(cluster) {
+  if (isEmojiPresentationCluster(cluster)) return 2;
+
+  let width = 0;
+  for (const character of cluster) {
+    const codePoint = character.codePointAt(0);
+    if (
+      codePoint === 0x200d ||
+      (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+      COMBINING_MARK.test(character)
+    ) {
+      continue;
+    }
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+  return width;
+}
+
+/** Display width in terminal columns, ignoring ANSI escapes. */
+export function displayWidth(text) {
+  let width = 0;
+  for (const cluster of graphemeClusters(stripAnsi(text))) {
+    width += clusterDisplayWidth(cluster);
+  }
+  return width;
+}
+
+/** Visible length in terminal columns. */
+export function visibleLength(text) {
+  return displayWidth(text);
+}
+
+function textTokens(text) {
+  const tokens = [];
+  let offset = 0;
+
+  for (const match of text.matchAll(ANSI_ESCAPE)) {
+    if (match.index > offset) {
+      tokens.push({ type: 'text', value: text.slice(offset, match.index) });
+    }
+    tokens.push({ type: 'ansi', value: match[0] });
+    offset = match.index + match[0].length;
+  }
+
+  if (offset < text.length) {
+    tokens.push({ type: 'text', value: text.slice(offset) });
+  }
+  return tokens;
+}
+
+/** Truncate on grapheme boundaries without exceeding the display width. */
+export function truncate(text, width) {
+  if (displayWidth(text) <= width) return text;
+  if (width <= 0) return '';
+
+  const limit = width <= 1 ? width : width - 1;
+  let result = '';
+  let used = 0;
+
+  for (const token of textTokens(text)) {
+    if (token.type === 'ansi') {
+      result += token.value;
+      continue;
+    }
+
+    for (const cluster of graphemeClusters(token.value)) {
+      const clusterWidth = clusterDisplayWidth(cluster);
+      if (used + clusterWidth > limit) {
+        if (width > 1) result += '…';
+        return result;
+      }
+      result += cluster;
+      used += clusterWidth;
+    }
+  }
+
+  if (width > 1) result += '…';
+  return result;
 }
 
 /**
@@ -216,7 +336,7 @@ export function createUi({
 
     rule() {
       if (json) return;
-      write(stdout, paint('gray', '─'.repeat(width)));
+      write(stdout, paint('gray', (useUnicode ? '─' : '-').repeat(width)));
     },
 
     /** A dim aside, for context the user does not have to act on. */

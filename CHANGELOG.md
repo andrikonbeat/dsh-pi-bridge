@@ -52,9 +52,6 @@ is actually on disk.
 - Terminal text is measured in display columns, so CJK characters, emoji and
   combining marks no longer make boxes misaligned, and truncation never cuts
   a character in half.
-- A terminal UI: a four-line arch as the mark, colour, boxed prompts and
-  numbered steps, degrading to plain ASCII when piped, on `TERM=dumb`, or with
-  `--no-color` / `--ascii`.
 
 ### Changed
 
