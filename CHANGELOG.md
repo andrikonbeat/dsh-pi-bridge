@@ -53,6 +53,15 @@ is actually on disk.
   combining marks no longer make boxes misaligned, and truncation never cuts
   a character in half.
 
+- An exported-but-empty `PI_CODING_AGENT_DIR` no longer shadows the `PI_HOME`
+  alias and the default.
+- A relative path is resolved against the home directory instead of the
+  current working directory, so the same flag means the same thing wherever
+  the command is run from.
+- The `pi-deepseek` wrapper no longer dies with an unbound-variable error
+  when `HOME` is unset: it falls back to `DSH_HOME`, and when neither is set
+  it says which variable to set.
+
 ### Changed
 
 - `--json` now emits a JSON document for `--version`, `--help`, `help` and
