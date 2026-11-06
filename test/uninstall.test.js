@@ -125,6 +125,122 @@ describe('uninstall', () => {
     }
   });
 
+  it('keeps a file it created when the user changed it after install', () => {
+    const box = createSandbox({ settings: SEEDED_SETTINGS });
+    try {
+      assert.equal(run(['install', '--yes'], box).status, 0);
+      const edited = '#!/bin/sh\n# the user rewrote this wrapper after install\nexec dsh web\n';
+      fs.writeFileSync(wrapperPath(box), edited);
+
+      const result = run(['uninstall'], box);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /keep/);
+      assert.match(result.stdout, /changed since install; left in place/);
+      assert.equal(
+        fs.readFileSync(wrapperPath(box), 'utf8'),
+        edited,
+        'uninstall never deletes a file it cannot prove it wrote',
+      );
+      assert.equal(readJson(settingsPath(box)).theme, 'dark', 'the rest of the plan still ran');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('keeps a file it created when the journal records no digest', () => {
+    const box = createSandbox({ settings: SEEDED_SETTINGS });
+    try {
+      assert.equal(run(['install', '--yes'], box).status, 0);
+      const journal = readJson(journalPath(box));
+      for (const entry of journal.entries) delete entry.sha256;
+      fs.writeFileSync(journalPath(box), `${JSON.stringify(journal, null, 2)}\n`);
+
+      const result = run(['uninstall'], box);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /no record of what install wrote; left in place/);
+      assert.ok(fs.existsSync(wrapperPath(box)), 'an older journal never authorizes a delete');
+      assert.ok(fs.existsSync(launcherPath(box)));
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('--dry-run reports a changed file as keep and deletes nothing', () => {
+    const box = createSandbox({ settings: SEEDED_SETTINGS });
+    try {
+      assert.equal(run(['install', '--yes'], box).status, 0);
+      fs.writeFileSync(wrapperPath(box), '#!/bin/sh\n# edited\n');
+      const before = snapshotTree(box.root);
+
+      const result = run(['uninstall', '--dry-run'], box);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /keep/);
+      assert.deepEqual(snapshotDiff(before, snapshotTree(box.root)), {
+        added: [],
+        removed: [],
+        changed: [],
+      });
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('restores only the settings keys it captured and keeps the keys the user added', () => {
+    const box = createSandbox({ settings: { theme: 'dark', defaultModel: 'anthropic-opus' } });
+    try {
+      assert.equal(run(['install', '--yes'], box).status, 0);
+
+      const journal = readJson(journalPath(box));
+      assert.deepEqual(journal.settings.keys.slice().sort(), [
+        'defaultModel',
+        'defaultProvider',
+        'enabledModels',
+      ]);
+      assert.deepEqual(journal.settings.before, { defaultModel: 'anthropic-opus' });
+
+      // The user keeps editing settings.json after install: an unrelated key
+      // changes, and a new one appears.
+      const edited = readJson(settingsPath(box));
+      edited.theme = 'light';
+      edited.lastUsedModel = 'something-new';
+      fs.writeFileSync(settingsPath(box), `${JSON.stringify(edited, null, 2)}\n`);
+
+      const result = run(['uninstall'], box);
+      assert.equal(result.status, 0, result.stderr);
+
+      const restored = readJson(settingsPath(box));
+      assert.deepEqual(restored, {
+        theme: 'light',
+        defaultModel: 'anthropic-opus',
+        lastUsedModel: 'something-new',
+      });
+      assert.equal('defaultProvider' in restored, false, 'a key install brought in is removed');
+      assert.equal('enabledModels' in restored, false, 'a key install brought in is removed');
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('keeps the settings.json it created when the user added a key to it', () => {
+    const box = createSandbox();
+    try {
+      assert.equal(run(['install', '--yes'], box).status, 0);
+      const created = readJson(settingsPath(box));
+      assert.equal(created.defaultProvider, 'deepseek');
+
+      created.lastUsedModel = 'something-new';
+      fs.writeFileSync(settingsPath(box), `${JSON.stringify(created, null, 2)}\n`);
+
+      const result = run(['uninstall'], box);
+      assert.equal(result.status, 0, result.stderr);
+
+      assert.ok(fs.existsSync(settingsPath(box)), 'the user key keeps the file alive');
+      assert.deepEqual(readJson(settingsPath(box)), { lastUsedModel: 'something-new' });
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
   it('tolerates a missing journal with a clear message', () => {
     const box = createSandbox({ settings: SEEDED_SETTINGS });
     try {

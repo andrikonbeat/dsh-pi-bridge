@@ -1,6 +1,8 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   cleanupSandbox,
@@ -90,6 +92,22 @@ describe('install', () => {
     }
   });
 
+  it('records a sha256 of the exact bytes it wrote for every journal entry', () => {
+    const box = createSandbox({ settings: SEEDED_SETTINGS });
+    try {
+      assert.equal(run(['install', '--yes'], box).status, 0);
+      const journal = readJson(journalPath(box));
+      assert.ok(journal.entries.length > 0);
+      for (const entry of journal.entries) {
+        assert.match(entry.sha256, /^[0-9a-f]{64}$/, `${entry.path} has a digest`);
+        const digest = createHash('sha256').update(fs.readFileSync(entry.path)).digest('hex');
+        assert.equal(entry.sha256, digest, `${entry.path} digest matches the bytes on disk`);
+      }
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
   it('is idempotent: a second install changes not a single byte', () => {
     const box = createSandbox();
     try {
@@ -106,6 +124,31 @@ describe('install', () => {
       assert.deepEqual(diff, { added: [], removed: [], changed: [] }, 'tree must be byte-identical');
       assert.deepEqual(fs.readFileSync(settingsPath(box)), settingsAfterFirst);
       assert.deepEqual(fs.readFileSync(journalPath(box)), journalAfterFirst);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('keeps the original before path when a later install rewrites the same file', () => {
+    const box = createSandbox();
+    const priorLauncher = '#!/bin/sh\n# the launcher that existed before the first install\nexec dsh web\n';
+    try {
+      fs.writeFileSync(launcherPath(box), priorLauncher);
+      assert.equal(run(['install', '--yes'], box).status, 0);
+      const first = readJson(journalPath(box));
+      const firstEntry = first.entries.find((entry) => entry.path === launcherPath(box));
+      assert.ok(firstEntry.before, 'the original bytes were backed up');
+
+      fs.writeFileSync(launcherPath(box), '#!/bin/sh\n# changed before the second install\n');
+      assert.equal(run(['install', '--yes'], box).status, 0);
+
+      const second = readJson(journalPath(box));
+      const secondEntry = second.entries.find((entry) => entry.path === launcherPath(box));
+      assert.equal(secondEntry.before, firstEntry.before, 'a re-run keeps the first backup');
+      assert.equal(fs.readFileSync(secondEntry.before, 'utf8'), priorLauncher);
+
+      assert.equal(run(['uninstall'], box).status, 0);
+      assert.equal(fs.readFileSync(launcherPath(box), 'utf8'), priorLauncher);
     } finally {
       cleanupSandbox(box);
     }
@@ -216,6 +259,61 @@ describe('install', () => {
       assert.equal(actions.get(launcherPath(box)), 'created');
       assert.equal(actions.get(wrapperPath(box)), 'created');
     } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('writes the journal before it mutates a path, so an interrupted install is recoverable', () => {
+    const box = createSandbox();
+    const priorLauncher = '#!/bin/sh\n# the launcher that existed before install\nexec dsh web\n';
+    try {
+      fs.writeFileSync(launcherPath(box), priorLauncher);
+      // A read-only DSH_HOME makes the launcher write fail after the settings
+      // write already happened: an interrupt in the middle of the run.
+      fs.chmodSync(box.dshHome, 0o555);
+
+      const result = run(['install', '--yes'], box);
+      assert.equal(result.status, 1, 'the run fails loudly instead of pretending');
+
+      assert.ok(fs.existsSync(journalPath(box)), 'the journal exists after the interrupt');
+      const journal = readJson(journalPath(box));
+      const covered = journal.entries.map((entry) => entry.path);
+      const settingsEntry = journal.entries.find((entry) => entry.path === settingsPath(box));
+      const launcherEntry = journal.entries.find((entry) => entry.path === launcherPath(box));
+
+      assert.ok(settingsEntry, 'the path whose bytes changed is in the journal');
+      assert.ok(launcherEntry, 'the path being written when the interrupt hit is in the journal too');
+      assert.ok(covered.includes(settingsPath(box)));
+      assert.equal(
+        settingsEntry.sha256,
+        createHash('sha256').update(fs.readFileSync(settingsPath(box))).digest('hex'),
+        'the digest covers the bytes already written',
+      );
+      assert.ok(launcherEntry.before, 'the prior bytes were backed up before the journal entry');
+      assert.ok(fs.existsSync(launcherEntry.before), 'the backup really exists');
+      assert.deepEqual(
+        journal.settings.keys.slice().sort(),
+        ['defaultModel', 'defaultProvider', 'enabledModels'],
+        'the settings keys install manages are recorded before settings.json is touched',
+      );
+      assert.equal(
+        fs.existsSync(path.join(box.stateDir, 'journal.lock')),
+        false,
+        'the lock is released even when the run fails',
+      );
+
+      // And the recovery really works: uninstall still restores everything.
+      fs.chmodSync(box.dshHome, 0o755);
+      const recovery = run(['uninstall'], box);
+      assert.equal(recovery.status, 0, recovery.stderr);
+      assert.equal(fs.readFileSync(launcherPath(box), 'utf8'), priorLauncher);
+      assert.equal(fs.existsSync(settingsPath(box)), false, 'nothing was left half-installed');
+    } finally {
+      try {
+        fs.chmodSync(box.dshHome, 0o755);
+      } catch {
+        /* the sandbox is removed below anyway */
+      }
       cleanupSandbox(box);
     }
   });
