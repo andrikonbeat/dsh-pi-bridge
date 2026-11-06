@@ -47,6 +47,12 @@ is actually on disk.
 - The token helper is only used when it is a regular executable file; a
   directory or a file without the execute bit falls back to the CLI.
 
+- Unicode glyphs are used only on a terminal; piped output, `TERM=dumb` and
+  `--ascii` get plain ASCII.
+- Terminal text is measured in display columns, so CJK characters, emoji and
+  combining marks no longer make boxes misaligned, and truncation never cuts
+  a character in half.
+
 ### Changed
 
 - `--json` now emits a JSON document for `--version`, `--help`, `help` and
