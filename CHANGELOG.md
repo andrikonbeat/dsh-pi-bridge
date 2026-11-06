@@ -6,16 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Hardening: the bridge can no longer destroy work it did not create, and the
+things it reported about a broken credential or a lost web panel now match what
+is actually on disk.
+
 ### Fixed
 
-- An unparsable version no longer compares as equal to every other version.
-  `doctor` now reports it as not parsable, and `isNodeSupported` says no
-  instead of yes.
-- `doctor` reports why a program could not be probed: a process killed by a
-  signal is named as such, and a program that could not be spawned says what
-  to fix.
-- The token helper is only used when it is a regular executable file; a
-  directory or a file without the execute bit falls back to the CLI.
+- `uninstall` keeps any file whose current bytes are not provably the bytes
+  `install` wrote, and names the reason, instead of deleting the file the user
+  edited. Journal entries now record a `sha256` of what was written, and the
+  journal is written before each path is mutated, so an interrupted `install`
+  is still recoverable.
+- `uninstall` restores only the settings keys `install` captured, so keys added
+  afterwards survive; the file is deleted only when `install` created it and
+  nothing is left in it.
+- Two mutating runs can no longer interleave: every command that writes takes a
+  `journal.lock`, the backup stamp directory is claimed exclusively, and a lock
+  whose owner is gone is taken over instead of blocking recovery.
+- `readJournal` rejects a version it does not know and entries that are not
+  shaped like journal entries, rather than acting on them.
 - `models.json` is written with every shell argument POSIX single-quoted, so
   a program path containing spaces, `$`, backticks, quotes or newlines is
   passed to the token command literally instead of being re-interpreted by
@@ -29,13 +38,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permission change or the sync fails, and the parent directory is now synced
   after the rename so the new file survives a crash.
 
-### Changed
+- An unparsable version no longer compares as equal to every other version.
+  `doctor` now reports it as not parsable, and `isNodeSupported` says no
+  instead of yes.
+- `doctor` reports why a program could not be probed: a process killed by a
+  signal is named as such, and a program that could not be spawned says what
+  to fix.
+- The token helper is only used when it is a regular executable file; a
+  directory or a file without the execute bit falls back to the CLI.
 
 - Unicode glyphs are used only on a terminal; piped output, `TERM=dumb` and
   `--ascii` get plain ASCII.
 - Terminal text is measured in display columns, so CJK characters, emoji and
   combining marks no longer make boxes misaligned, and truncation never cuts
   a character in half.
+- A terminal UI: a four-line arch as the mark, colour, boxed prompts and
+  numbered steps, degrading to plain ASCII when piped, on `TERM=dumb`, or with
+  `--no-color` / `--ascii`.
+
+### Changed
+
 - `--json` now emits a JSON document for `--version`, `--help`, `help` and
   usage errors, so machine consumers never receive mixed output. Usage errors
   report `{ok:false,"error":"...","code":2}` on stdout with exit code 2.
