@@ -62,6 +62,10 @@ is actually on disk.
   when `HOME` is unset: it falls back to `DSH_HOME`, and when neither is set
   it says which variable to set.
 
+- Waiting for the account grant can be interrupted with Ctrl-C. The panel
+  started by that run is stopped as a process group instead of being left
+  behind, and the run reports the interruption.
+
 ### Changed
 
 - `--json` now emits a JSON document for `--version`, `--help`, `help` and

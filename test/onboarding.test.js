@@ -1,11 +1,13 @@
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
 import { GRANT_RECORD_KEY, accountGrantStatus, grantState } from '../src/dsh-account.js';
-import { ensureAccount } from '../src/onboarding.js';
+import { stopPanelGroup } from '../src/dsh-web.js';
+import { ensureAccount, waitForGrant } from '../src/onboarding.js';
 import { resolveLayout } from '../src/paths.js';
 import { CLI, cleanupSandbox, createSandbox } from './helpers.js';
 
@@ -42,21 +44,6 @@ function freePort() {
   });
 }
 
-/**
- * The panel the onboarding opens, without a real dsh: it signs the user in by
- * writing the grant, the way the real panel does when the browser signs in.
- */
-function writeLauncher(layout, token) {
-  fs.mkdirSync(layout.dshHome, { recursive: true });
-  fs.writeFileSync(
-    layout.launcherPath,
-    `#!/bin/sh\ncat > '${layout.credentialsPath}' <<'YAML'\n${grantYaml(token)}YAML\n` +
-      "printf 'open http://127.0.0.1:%s/?token=test-token\\n' \"$DSH_PORT\"\n",
-    { mode: 0o755 },
-  );
-}
-
-/** A UI that records what the user would have seen. */
 function fakeUi() {
   const calls = [];
   const record = (kind) => (...args) => calls.push([kind, ...args]);
@@ -78,10 +65,16 @@ function fakeUi() {
   };
 }
 
-/**
- * Sign in through `ensureAccount`, with the panel replaced by a script that
- * writes the grant it would have written.
- */
+function writeLauncher(layout, token) {
+  fs.mkdirSync(layout.dshHome, { recursive: true });
+  fs.writeFileSync(
+    layout.launcherPath,
+    `#!/bin/sh\ncat > '${layout.credentialsPath}' <<'YAML'\n${grantYaml(token)}YAML\n` +
+      "printf 'open http://127.0.0.1:%s/?token=test-token\\n' \"$DSH_PORT\"\n",
+    { mode: 0o755 },
+  );
+}
+
 async function signIn(sandbox, { token, before = null }) {
   const layout = resolveLayout({ env: { DSH_HOME: sandbox.dshHome, PI_HOME: sandbox.piHome, BIN_DIR: sandbox.binDir, STATE_DIR: sandbox.stateDir } });
   if (before !== null) writeCredentials(layout.credentialsPath, before);
@@ -98,6 +91,131 @@ async function signIn(sandbox, { token, before = null }) {
   });
   return { result, ui, layout };
 }
+
+describe('waiting for the account grant', () => {
+  let sandbox;
+  before(() => {
+    sandbox = createSandbox();
+  });
+  after(() => cleanupSandbox(sandbox));
+
+  it('returns immediately when the signal is already aborted (S4-12)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const state = await waitForGrant(path.join(sandbox.root, 'missing.yaml'), {
+      signal: controller.signal,
+      timeoutMs: 60_000,
+    });
+
+    assert.equal(state.state, 'aborted');
+  });
+
+  it('stops waiting as soon as the signal aborts (S4-12)', async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+
+    const pending = waitForGrant(path.join(sandbox.root, 'missing.yaml'), {
+      signal: controller.signal,
+      timeoutMs: 60_000,
+      intervalMs: 50,
+    });
+    setTimeout(() => controller.abort(), 150);
+
+    const state = await pending;
+    const elapsed = Date.now() - started;
+
+    assert.equal(state.state, 'aborted');
+    assert.ok(elapsed < 10_000, `the wait ended promptly (took ${elapsed}ms)`);
+  });
+
+  it('runs the abort hook exactly once (S4-12)', async () => {
+    const controller = new AbortController();
+    let aborted = 0;
+
+    const pending = waitForGrant(path.join(sandbox.root, 'missing.yaml'), {
+      signal: controller.signal,
+      timeoutMs: 60_000,
+      intervalMs: 50,
+      onAbort: () => {
+        aborted += 1;
+      },
+    });
+    setTimeout(() => controller.abort(), 100);
+
+    await pending;
+    assert.equal(aborted, 1);
+  });
+
+  it('treats SIGINT as an abort (S4-12)', async () => {
+    // The signal is delivered to a child process, so the test process is
+    // never at risk of being killed by its own SIGINT.
+    const script = `
+      import { waitForGrant } from ${JSON.stringify(path.resolve('src/onboarding.js'))};
+      const state = await waitForGrant('/nonexistent/credentials.yaml', {
+        timeoutMs: 60000,
+        intervalMs: 100,
+      });
+      process.stdout.write(JSON.stringify(state));
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8',
+    });
+
+    let out = '';
+    child.stdout.on('data', (chunk) => {
+      out += chunk;
+    });
+    setTimeout(() => child.kill('SIGINT'), 300);
+
+    const code = await new Promise((resolve) => child.once('exit', resolve));
+
+    assert.equal(code, 0, 'the child finished on its own');
+    assert.equal(JSON.parse(out).state, 'aborted');
+  });
+});
+
+describe('stopping the panel process group', () => {
+  let sandbox;
+  before(() => {
+    sandbox = createSandbox();
+  });
+  after(() => cleanupSandbox(sandbox));
+
+  it('kills the whole group of a detached child (S4-12)', async () => {
+    const marker = path.join(sandbox.root, 'child.pid');
+    const child = spawn('/bin/sh', ['-c', `echo $$ > ${marker}; sleep 60`], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+
+    // Wait for the child to write its pid.
+    for (let attempt = 0; attempt < 50 && !fs.existsSync(marker); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(fs.existsSync(marker), 'the child reported its pid');
+    const pid = Number(fs.readFileSync(marker, 'utf8').trim());
+
+    const result = stopPanelGroup(pid);
+    assert.equal(result.stopped, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    let alive = true;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+    assert.equal(alive, false, 'the child is gone');
+  });
+
+  it('reports honestly when the process is already gone (S4-12)', () => {
+    const result = stopPanelGroup(999_999);
+    assert.equal(result.stopped, false);
+    assert.match(result.reason, /no such process|not found|gone/i);
+  });
+});
 
 describe('the state a caller compares accounts with (S8)', () => {
   it('carries the token, so two states can be compared', () => {

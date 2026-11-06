@@ -1,6 +1,12 @@
 import { fingerprint } from './pi-auth.js';
 import { grantState } from './dsh-account.js';
-import { resolveDshPort, startDshWeb, stopDshWeb } from './dsh-web.js';
+import {
+  openInBrowser,
+  resolveDshPort,
+  startDshWeb,
+  stopDshWeb,
+  stopPanelGroup,
+} from './dsh-web.js';
 import { JournalError, readJournal } from './journal.js';
 import { persistSharedProvider, wireSharedProvider } from './commands/sync.js';
 
@@ -30,17 +36,87 @@ function accountFingerprint(state) {
   return state.state === 'usable' ? fingerprint(state.token) : null;
 }
 
-/** Poll the grant until it appears, or give up honestly. */
-async function waitForGrant(credentialsPath, { timeoutMs = 45_000, intervalMs = 1_500 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const state = grantState(credentialsPath);
-    if (state.state === 'usable') return state;
-    if (Date.now() >= deadline) return state;
-    await new Promise((resolve) => {
-      setTimeout(resolve, intervalMs);
-    });
+/** The state returned when the user interrupts the wait. */
+const ABORTED_STATE = {
+  state: 'aborted',
+  detail: 'the wait was interrupted before an account appeared',
+  issuer: null,
+};
+
+/**
+ * Sleep, but wake up early when the wait is aborted.
+ *
+ * A plain `setTimeout` would keep the process alive for the whole interval
+ * after a Ctrl-C, which is exactly the delay the user is trying to escape.
+ */
+function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Poll the grant until it appears, or give up honestly.
+ *
+ * The wait is interruptible in two ways: an `AbortSignal` the caller owns,
+ * and Ctrl-C. Ctrl-C is handled here rather than left to the default, because
+ * the default kills the process outright and would leave the panel running
+ * with nobody watching it.
+ *
+ * `onAbort` runs exactly once, when the wait is cut short, so the caller can
+ * clean up what it started.
+ */
+export async function waitForGrant(
+  credentialsPath,
+  { timeoutMs = 45_000, intervalMs = 1_500, signal = null, onAbort = null } = {},
+) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+
+  if (signal) {
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
   }
+
+  // A SIGINT listener replaces the default "die immediately" behaviour, so
+  // the cleanup below actually runs. It is removed again in the `finally`.
+  const onSigint = () => abort();
+  process.on('SIGINT', onSigint);
+
+  let aborted = false;
+  try {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (controller.signal.aborted) {
+        aborted = true;
+        break;
+      }
+      const state = grantState(credentialsPath);
+      if (state.state === 'usable') return state;
+      if (Date.now() >= deadline) return state;
+      await sleep(intervalMs, controller.signal);
+    }
+  } finally {
+    process.off('SIGINT', onSigint);
+    signal?.removeEventListener('abort', abort);
+  }
+
+  if (aborted && onAbort) onAbort();
+  return { ...ABORTED_STATE };
 }
 
 /**
@@ -50,7 +126,13 @@ async function waitForGrant(credentialsPath, { timeoutMs = 45_000, intervalMs = 
  * a CI job or an SSH session must print the URL, not try to launch a browser.
  * That is why the URL is always printed as text, whatever `open` says.
  */
-async function presentSignIn({ layout, ui, env, open, restart, interactive }) {
+async function presentSignIn({ layout, ui, env, open, restart, interactive, before, signal }) {
+  const resolved = resolveDshPort(undefined, env);
+  if (resolved.error) {
+    ui.error(resolved.error);
+    return { ok: false, reason: 'bad-port', url: null };
+  }
+  const port = resolved.port;
   let url = null;
   let started = null;
 
@@ -68,13 +150,6 @@ async function presentSignIn({ layout, ui, env, open, restart, interactive }) {
     ui.aside('Run that on your desktop, sign in, and Pi is wired.');
     return { ok: false, reason: 'not-interactive', url: null };
   }
-
-  const resolved = resolveDshPort(undefined, env);
-  if (resolved.error) {
-    ui.error(resolved.error);
-    return { ok: false, reason: 'bad-port', url: null };
-  }
-  const port = resolved.port;
 
   if (restart) {
     const stopped = stopDshWeb(port, { launcherPath: layout.launcherPath });
@@ -124,9 +199,24 @@ async function presentSignIn({ layout, ui, env, open, restart, interactive }) {
   ui.blank();
   ui.step(2, 2, 'Detecting your DeepSeek account');
 
-  const after = await waitForGrant(layout.credentialsPath);
+  // An interrupted wait must not leave the panel running with nobody
+  // watching it: the group is stopped, and the run reports `aborted` instead
+  // of pretending the account was never found.
+  const after = await waitForGrant(layout.credentialsPath, {
+    signal,
+    onAbort: () => {
+      if (started && !started.alreadyRunning && started.pid) {
+        stopPanelGroup(started.pid);
+      }
+    },
+  });
+  if (after.state === 'aborted') {
+    ui.error(after.detail);
+    return { ok: false, reason: 'aborted', url };
+  }
   if (after.state !== 'usable') {
     ui.error(after.detail);
+    void before;
     return { ok: false, reason: 'no-grant', url };
   }
   return { ok: true, state: after, url };
@@ -149,6 +239,7 @@ export async function ensureAccount({
   restart = false,
   interactive = process.stdin.isTTY === true && process.stdout.isTTY === true,
   announce = true,
+  signal = null,
 } = {}) {
   const before = grantState(layout.credentialsPath);
 
@@ -161,7 +252,7 @@ export async function ensureAccount({
     return { ok: true, changed: false, state: before, reason: null, accountChanged: false, url: null };
   }
 
-  const presented = await presentSignIn({ layout, ui, env, open, restart, interactive });
+  const presented = await presentSignIn({ layout, ui, env, open, restart, interactive, before, signal });
   if (!presented.ok) {
     if (presented.reason === 'not-interactive') {
       return { ok: false, changed: false, state: before, reason: 'not-interactive', url: presented.url };

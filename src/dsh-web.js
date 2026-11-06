@@ -313,6 +313,42 @@ export function stopDshWeb(
 }
 
 /**
+ * Stop a panel this process started, by process group.
+ *
+ * The panel is spawned detached, so it leads its own group and the launcher
+ * that started it may have children of its own. Signalling the group stops
+ * all of them at once; signalling only the leader can leave the rest behind,
+ * still holding the port.
+ *
+ * A group that is already gone is reported as such rather than as a failure
+ * worth retrying.
+ */
+export function stopPanelGroup(pid) {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) {
+    return { stopped: false, reason: 'no panel process to stop' };
+  }
+  try {
+    process.kill(-pid, 'SIGTERM');
+    return { stopped: true, pid };
+  } catch (error) {
+    if (error.code === 'ESRCH') {
+      return { stopped: false, reason: `the panel process ${pid} is already gone` };
+    }
+    // The group could not be signalled (no permission, or the platform does
+    // not support it): fall back to the leader alone.
+    try {
+      process.kill(pid, 'SIGTERM');
+      return { stopped: true, pid };
+    } catch (inner) {
+      if (inner.code === 'ESRCH') {
+        return { stopped: false, reason: `the panel process ${pid} is already gone` };
+      }
+      return { stopped: false, reason: `could not stop the panel process ${pid}: ${inner.message}` };
+    }
+  }
+}
+
+/**
  * Open a URL in the user's browser, best effort.
  *
  * A failure here is never fatal: the URL is always printed as text too, which
