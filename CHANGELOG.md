@@ -66,6 +66,13 @@ is actually on disk.
   started by that run is stopped as a process group instead of being left
   behind, and the run reports the interruption.
 
+- The launcher no longer dies on macOS before it starts the web panel. It
+  joined the PATH entries with `paste -sd:`, a bundled short-option form
+  that the BSD `paste` rejects with a usage message, so on macOS the script
+  aborted on its first line. The entries are now joined with `tr`/`sed`,
+  which behave the same on both systems.
+
+
 ### Changed
 
 - `--json` now emits a JSON document for `--version`, `--help`, `help` and
