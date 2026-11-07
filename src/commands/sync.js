@@ -1,9 +1,13 @@
+import { createHash } from 'node:crypto';
+
 import { accountGrantStatus, grantState, readAccountGrant } from '../dsh-account.js';
 import { applySharedProvider, loadModels, renderModels, sharedProvider } from '../models.js';
 import { tokenProgram } from '../token-helper.js';
 import { writeFileAtomic } from '../fs-atomic.js';
 import {
   JournalError,
+  LockHeldError,
+  acquireJournalLock,
   createBackupBatch,
   createJournal,
   mergeEntries,
@@ -83,16 +87,27 @@ export function persistSharedProvider({ layout, plan, journal }) {
   const batch = createBackupBatch({ backupsDir: layout.backupsDir });
   const before = plan.current.exists ? batch.backup(plan.modelsPath) : null;
 
-  // Atomic: Pi may be starting while this runs, and a truncated models.json
-  // would make it fail to parse its own configuration.
-  writeFileAtomic(plan.modelsPath, plan.rendered, { mode: 0o644 });
-
-  const entries = [{ path: plan.modelsPath, before, after: 'file-copy' }];
+  const entries = [
+    {
+      path: plan.modelsPath,
+      before,
+      after: 'file-copy',
+      sha256: createHash('sha256').update(plan.rendered).digest('hex'),
+    },
+  ];
   const next = journal
     ? { ...journal, entries: mergeEntries(journal, entries) }
     : createJournal({ versions: {} });
   if (!journal) next.entries = mergeEntries(next, entries);
+
+  // Record the intended bytes before touching models.json. If the write is
+  // interrupted, the journal still proves what this run owned and uninstall
+  // can recover without guessing.
   writeJournal(layout.journalPath, next);
+
+  // Atomic: Pi may be starting while this runs, and a truncated models.json
+  // would make it fail to parse its own configuration.
+  writeFileAtomic(plan.modelsPath, plan.rendered, { mode: 0o644 });
 }
 
 /**
@@ -103,89 +118,106 @@ export function persistSharedProvider({ layout, plan, journal }) {
  * the file already says what it should.
  */
 export function sync({ options = {}, ui, layout, env = process.env, cliPath }) {
-  const grant = accountGrantStatus(layout.credentialsPath);
-
-  if (!grant.ok) {
-    ui.error(grant.error);
-    ui.aside('the API-key route is untouched, so Pi still works with a stored deepseek key');
-    ui.aside('sign in to DeepSeek in the dsh web interface, then run "pi-dsh-bridge sync" again');
-    ui.aside('or run "pi-dsh-bridge account", which opens the panel for you');
-    return 1;
-  }
-
-  let plan;
-  try {
-    plan = wireSharedProvider({ layout, cliPath });
-  } catch (error) {
-    ui.error(error.message);
-    return 1;
-  }
-
-  const command = plan.provider.headers['x-dsh-auth-token'];
-
-  if (options.dryRun) {
-    ui.line('sync plan (dry run: nothing is written)');
-    ui.line(`  ${plan.changed ? 'updated  ' : 'unchanged'} ${plan.modelsPath}  deepseek provider -> shared account`);
-    ui.line(`  header    ${command}`);
-    if (ui.json) {
-      ui.emitJson({
-        command: 'sync',
-        ok: true,
-        dryRun: true,
-        modelsPath: plan.modelsPath,
-        changed: plan.changed,
-        issuer: grant.issuer,
-      });
+  let lock = null;
+  if (options.dryRun !== true) {
+    try {
+      lock = acquireJournalLock(layout);
+    } catch (error) {
+      if (error instanceof LockHeldError) {
+        ui.note(error.message);
+        return 1;
+      }
+      throw error;
     }
-    return 0;
   }
 
-  if (!plan.changed) {
+  try {
+    const grant = accountGrantStatus(layout.credentialsPath);
+
+    if (!grant.ok) {
+      ui.error(grant.error);
+      ui.aside('the API-key route is untouched, so Pi still works with a stored deepseek key');
+      ui.aside('sign in to DeepSeek in the dsh web interface, then run "pi-dsh-bridge sync" again');
+      ui.aside('or run "pi-dsh-bridge account", which opens the panel for you');
+      return 1;
+    }
+
+    let plan;
+    try {
+      plan = wireSharedProvider({ layout, cliPath });
+    } catch (error) {
+      ui.error(error.message);
+      return 1;
+    }
+
+    const command = plan.provider.headers['x-dsh-auth-token'];
+
+    if (options.dryRun) {
+      ui.line('sync plan (dry run: nothing is written)');
+      ui.line(`  ${plan.changed ? 'updated  ' : 'unchanged'} ${plan.modelsPath}  deepseek provider -> shared account`);
+      ui.line(`  header    ${command}`);
+      if (ui.json) {
+        ui.emitJson({
+          command: 'sync',
+          ok: true,
+          dryRun: true,
+          modelsPath: plan.modelsPath,
+          changed: plan.changed,
+          issuer: grant.issuer,
+        });
+      }
+      return 0;
+    }
+
+    if (!plan.changed) {
+      ui.line('sync');
+      ui.line(`  unchanged ${plan.modelsPath}  deepseek provider -> shared account`);
+      ui.line(`  account   ${grant.issuer ?? 'deepseek account'} (token read on demand, never stored here)`);
+      if (ui.json) {
+        ui.emitJson({
+          command: 'sync',
+          ok: true,
+          dryRun: false,
+          modelsPath: plan.modelsPath,
+          changed: false,
+          issuer: grant.issuer,
+        });
+      }
+      return 0;
+    }
+
+    let journal;
+    try {
+      journal = readJournal(layout.journalPath);
+    } catch (error) {
+      if (error instanceof JournalError) {
+        ui.error(error.message);
+        return 1;
+      }
+      throw error;
+    }
+
+    persistSharedProvider({ layout, plan, journal });
+
     ui.line('sync');
-    ui.line(`  unchanged ${plan.modelsPath}  deepseek provider -> shared account`);
+    ui.line(`  updated  ${plan.modelsPath}  deepseek provider -> shared account`);
+    ui.line(`  header    ${command}`);
     ui.line(`  account   ${grant.issuer ?? 'deepseek account'} (token read on demand, never stored here)`);
+
     if (ui.json) {
       ui.emitJson({
         command: 'sync',
         ok: true,
         dryRun: false,
         modelsPath: plan.modelsPath,
-        changed: false,
+        changed: true,
         issuer: grant.issuer,
       });
     }
     return 0;
+  } finally {
+    if (lock) lock.release();
   }
-
-  let journal;
-  try {
-    journal = readJournal(layout.journalPath);
-  } catch (error) {
-    if (error instanceof JournalError) {
-      ui.error(error.message);
-      return 1;
-    }
-    throw error;
-  }
-
-  persistSharedProvider({ layout, plan, journal });
-
-  ui.line('sync');
-  ui.line(`  updated  ${plan.modelsPath}  deepseek provider -> shared account`);
-  ui.line(`  header    ${command}`);
-  ui.line(`  account   ${grant.issuer ?? 'deepseek account'} (token read on demand, never stored here)`);
-
-  if (ui.json) {
-    ui.emitJson({
-      command: 'sync',
-      ok: true,
-      dryRun: false,
-      modelsPath: plan.modelsPath,
-      changed: true,
-      issuer: grant.issuer,
-    });
-  }
-  return 0;
 }
 
 export const SYNC_HELP = `Usage: pi-dsh-bridge sync [options]

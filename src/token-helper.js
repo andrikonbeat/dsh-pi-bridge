@@ -22,6 +22,17 @@ export function renderHelper({ cliPath }) {
   return template.replaceAll('__CLI_PATH__', cliPath);
 }
 
+function isExecutableFile(candidate) {
+  try {
+    const stats = fs.statSync(candidate);
+    if (!stats.isFile()) return false;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The program Pi should run for the token.
  *
@@ -30,7 +41,7 @@ export function renderHelper({ cliPath }) {
  * suite and a developer's own machine work.
  */
 export function tokenProgram({ layout, cliPath }) {
-  if (layout.tokenHelperPath && fs.existsSync(layout.tokenHelperPath)) {
+  if (layout.tokenHelperPath && isExecutableFile(layout.tokenHelperPath)) {
     return layout.tokenHelperPath;
   }
   return cliPath;

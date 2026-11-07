@@ -20,6 +20,36 @@ export const DEFAULT_PORT = 3080;
 /** A URL that carries the panel's session token. */
 const TOKEN_URL = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)\/?\?token=[A-Za-z0-9._~-]+/;
 
+/** The one message a bad `DSH_PORT` produces. */
+export function portError(value) {
+  return `DSH_PORT must be an integer between 1 and 65535, got "${value}"`;
+}
+
+/**
+ * Resolve the panel port once, here.
+ *
+ * `0` is invalid rather than "use the default", and so is every non-integer:
+ * a panel started on a port nobody asked for is worse than a message, because
+ * the sign-in URL it prints then points somewhere the user will not look.
+ *
+ * Returns `{ port, error }`; `port` is null when the value is not usable.
+ */
+export function resolveDshPort(port, env = process.env) {
+  const raw =
+    port === undefined || port === null
+      ? Object.prototype.hasOwnProperty.call(env, 'DSH_PORT')
+        ? env.DSH_PORT
+        : undefined
+      : port;
+  if (raw === undefined) return { port: DEFAULT_PORT, error: null };
+  const text = String(raw);
+  const value = Number(text);
+  if (!/^\d+$/.test(text) || !Number.isInteger(value) || value < 1 || value > 65535) {
+    return { port: null, error: portError(text) };
+  }
+  return { port: value, error: null };
+}
+
 /** True when something accepts TCP connections on `port` of the loopback. */
 export function isListening(port = DEFAULT_PORT, { host = '127.0.0.1', timeout = 400 } = {}) {
   return new Promise((resolve) => {
@@ -35,6 +65,46 @@ export function isListening(port = DEFAULT_PORT, { host = '127.0.0.1', timeout =
     socket.once('connect', () => finish(true));
     socket.once('timeout', () => finish(false));
     socket.once('error', () => finish(false));
+    socket.connect(port, host);
+  });
+}
+
+/**
+ * Ask the port two questions in one connection: is anything listening, and
+ * does it answer HTTP?
+ *
+ * A TCP accept proves only that a socket exists. Anything can hold the port —
+ * a stale process, a container proxy, a completely different service — and
+ * treating that as "the panel is already serving" sends the user looking for
+ * a sign-in URL that was never printed. The panel answers HTTP, so any status
+ * line counts, including 401 and 403.
+ *
+ * Returns `{ listening, answering }`.
+ */
+export function probePanel(port, { host = '127.0.0.1', timeout = 400 } = {}) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let connected = false;
+    let buffer = '';
+    let settled = false;
+    const finish = (listening, answering) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ listening, answering });
+    };
+    socket.setTimeout(timeout);
+    socket.once('connect', () => {
+      connected = true;
+      socket.write(`GET / HTTP/1.1\r\nHost: ${host}:${port}\r\nConnection: close\r\n\r\n`);
+    });
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('latin1');
+      if (/^HTTP\/\d(?:\.\d)?\s+\d{3}/.test(buffer)) finish(true, true);
+    });
+    socket.once('timeout', () => finish(connected, false));
+    socket.once('error', () => finish(false, false));
+    socket.once('close', () => finish(connected, /^HTTP\//.test(buffer)));
     socket.connect(port, host);
   });
 }
@@ -58,35 +128,59 @@ export function pidOnPort(port = DEFAULT_PORT) {
 /**
  * Start the panel and read the tokenised URL it prints.
  *
- * Resolves `{ url, alreadyRunning, error }`. It never rejects: a panel that
- * will not start is data the caller renders, not an exception.
+ * Resolves `{ url, alreadyRunning, port, pid, error }`. It never rejects: a
+ * panel that will not start is data the caller renders, not an exception.
+ *
+ * `killGroup` is injectable so the "no URL, no orphan" path can be tested
+ * without signalling anything on the host.
  */
 export async function startDshWeb({
   launcherPath,
   env = process.env,
-  port = Number(env.DSH_PORT) || DEFAULT_PORT,
+  port,
   timeoutMs = 30_000,
+  killGroup = (target, signal) => process.kill(target, signal),
 } = {}) {
-  if (await isListening(port)) {
-    return { url: null, alreadyRunning: true, port, error: null };
+  const resolved = resolveDshPort(port, env);
+  if (resolved.error) {
+    return { url: null, alreadyRunning: false, port: null, pid: null, error: resolved.error };
   }
+  const chosen = resolved.port;
+
+  const panel = await probePanel(chosen);
+  if (panel.answering) {
+    return { url: null, alreadyRunning: true, port: chosen, pid: null, error: null };
+  }
+  if (panel.listening) {
+    return {
+      url: null,
+      alreadyRunning: false,
+      port: chosen,
+      pid: null,
+      error:
+        `port ${chosen} is held by something that is not the dsh web panel ` +
+        '(it accepts connections but returns no HTTP response); the panel was not started',
+    };
+  }
+
   if (!launcherPath || !fs.existsSync(launcherPath)) {
     return {
       url: null,
       alreadyRunning: false,
-      port,
+      port: chosen,
+      pid: null,
       error: `the dsh web launcher is missing at ${launcherPath}; run: pi-dsh-bridge install`,
     };
   }
 
   const child = spawn('bash', [launcherPath], {
-    env: { ...env, DSH_PORT: String(port) },
+    env: { ...env, DSH_PORT: String(chosen) },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
   const collected = [];
-  const url = await new Promise((resolve) => {
+  const outcome = await new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
       if (settled) return;
@@ -95,18 +189,20 @@ export async function startDshWeb({
       resolve(value);
     };
     const onChunk = (chunk) => {
-      const text = chunk.toString();
-      collected.push(text);
-      const match = text.match(TOKEN_URL);
-      if (match) finish(match[0]);
+      collected.push(chunk.toString());
+      // Match the accumulated buffer, not the chunk: the URL can be split
+      // across two `data` events and is then never whole inside either.
+      const match = collected.join('').match(TOKEN_URL);
+      if (match) finish({ url: match[0], reason: null });
     };
-    const timer = setTimeout(() => finish(null), timeoutMs);
-    child.stdout.on('data', onChunk);
-    child.stderr.on('data', onChunk);
-    child.once('error', () => finish(null));
-    child.once('exit', (code) => {
-      if (code !== 0) finish(null);
-    });
+    const timer = setTimeout(() => finish({ url: null, reason: 'timeout' }), timeoutMs);
+    if (child.stdout) child.stdout.on('data', onChunk);
+    if (child.stderr) child.stderr.on('data', onChunk);
+    child.once('error', (error) => finish({ url: null, reason: 'error', error }));
+    // Any exit settles the wait, whatever the code: a launcher that exits 0
+    // without printing a URL will never print one afterwards, so burning the
+    // whole timeout only delays the truth.
+    child.once('exit', (code, signal) => finish({ url: null, reason: 'exit', code, signal }));
   });
 
   // The panel keeps running after this CLI exits: that is the point. Detach it
@@ -117,36 +213,138 @@ export async function startDshWeb({
       stream.destroy();
     }
   }
+
+  if (!outcome.url && child.pid) {
+    // No URL means this child will never hand over the tokenised address, so it
+    // must not keep the port: an orphan makes every later run report a running
+    // panel whose sign-in URL can no longer be recovered.
+    try {
+      killGroup(-child.pid, 'SIGTERM');
+    } catch {
+      // Best effort: the child may already be gone, which is the wanted state.
+    }
+  }
   child.unref();
 
   return {
-    url,
+    url: outcome.url,
     alreadyRunning: false,
-    port,
+    port: chosen,
     pid: child.pid ?? null,
-    error: url
-      ? null
-      : `dsh web did not print a sign-in URL within ${Math.round(timeoutMs / 1000)}s: ${collected
-          .join('')
-          .trim()
-          .split('\n')
-          .slice(-3)
-          .join(' | ')
-          .slice(0, 240)}`,
+    error: outcome.url ? null : failureMessage(outcome, collected, timeoutMs),
   };
 }
 
-/** Stop the panel listening on `port`, when we can identify it safely. */
-export function stopDshWeb(port = DEFAULT_PORT) {
-  const pid = pidOnPort(port);
-  if (pid === null) {
+/** The last few captured lines, for a message the user can act on. */
+function capturedOutput(collected) {
+  const text = collected.join('').trim();
+  if (!text) return 'no output';
+  return text.split('\n').slice(-3).join(' | ').slice(0, 240);
+}
+
+function failureMessage(outcome, collected, timeoutMs) {
+  if (outcome.reason === 'exit') {
+    const how = outcome.signal ? `signal ${outcome.signal}` : `code ${outcome.code}`;
+    return `dsh web exited (${how}) without printing a sign-in URL: ${capturedOutput(collected)}`;
+  }
+  if (outcome.reason === 'error') {
+    return `dsh web could not be started: ${outcome.error?.message ?? 'unknown error'}`;
+  }
+  return `dsh web did not print a sign-in URL within ${Math.round(timeoutMs / 1000)}s: ${capturedOutput(collected)}`;
+}
+
+/** Read a process command line, or null when it cannot be read. */
+export function readProcCmdline(pid) {
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return raw.split('\0').filter((part) => part.length > 0).join(' ').trim();
+  } catch {
+    return null;
+  }
+}
+
+/** True when a command line identifies the dsh web panel. */
+function identifiesPanel(cmdline, launcherPath) {
+  if (launcherPath && cmdline.includes(launcherPath)) return true;
+  const lower = cmdline.toLowerCase();
+  return /\bdsh\b/.test(lower) && /\bweb\b/.test(lower);
+}
+
+/**
+ * Stop the panel listening on `port`, when we can identify it safely.
+ *
+ * Signalling whatever happens to hold a port is how a "restart" kills an
+ * unrelated service. So the pid is only signalled when its command line says
+ * it is the panel. `pid`, `readCmdline`, `launcherPath` and `kill` are
+ * injectable so the decision is testable without touching the host.
+ */
+export function stopDshWeb(
+  port = DEFAULT_PORT,
+  {
+    pid = undefined,
+    launcherPath = null,
+    readCmdline = readProcCmdline,
+    kill = (target, signal) => process.kill(target, signal),
+  } = {},
+) {
+  const target = pid === undefined ? pidOnPort(port) : pid;
+  if (target === null || target === undefined) {
     return { stopped: false, reason: `cannot identify the process listening on port ${port}` };
   }
+  const cmdline = readCmdline(target);
+  if (cmdline === null || cmdline === undefined) {
+    return {
+      stopped: false,
+      reason: `pid ${target} on port ${port} is not the dsh web panel (cmdline unreadable); not touching it`,
+    };
+  }
+  if (!identifiesPanel(cmdline, launcherPath)) {
+    return {
+      stopped: false,
+      reason: `pid ${target} on port ${port} is not the dsh web panel (${cmdline}); not touching it`,
+    };
+  }
   try {
-    process.kill(pid, 'SIGTERM');
+    kill(target, 'SIGTERM');
+    return { stopped: true, pid: target };
+  } catch (error) {
+    return { stopped: false, reason: `could not stop pid ${target}: ${error.message}` };
+  }
+}
+
+/**
+ * Stop a panel this process started, by process group.
+ *
+ * The panel is spawned detached, so it leads its own group and the launcher
+ * that started it may have children of its own. Signalling the group stops
+ * all of them at once; signalling only the leader can leave the rest behind,
+ * still holding the port.
+ *
+ * A group that is already gone is reported as such rather than as a failure
+ * worth retrying.
+ */
+export function stopPanelGroup(pid) {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) {
+    return { stopped: false, reason: 'no panel process to stop' };
+  }
+  try {
+    process.kill(-pid, 'SIGTERM');
     return { stopped: true, pid };
   } catch (error) {
-    return { stopped: false, reason: `could not stop pid ${pid}: ${error.message}` };
+    if (error.code === 'ESRCH') {
+      return { stopped: false, reason: `the panel process ${pid} is already gone` };
+    }
+    // The group could not be signalled (no permission, or the platform does
+    // not support it): fall back to the leader alone.
+    try {
+      process.kill(pid, 'SIGTERM');
+      return { stopped: true, pid };
+    } catch (inner) {
+      if (inner.code === 'ESRCH') {
+        return { stopped: false, reason: `the panel process ${pid} is already gone` };
+      }
+      return { stopped: false, reason: `could not stop the panel process ${pid}: ${inner.message}` };
+    }
   }
 }
 
