@@ -83,16 +83,32 @@ export function parseArgv(argv = []) {
   const options = {};
   let command = null;
   let error = null;
+  let endOfGlobalOptions = false;
 
   const tokens = [...argv];
   while (tokens.length > 0) {
     let token = tokens.shift();
 
-    if (token === '--') {
+    // `--` before a command ends global option parsing.
+    if (!endOfGlobalOptions && token === '--') {
+      endOfGlobalOptions = true;
       continue;
     }
 
-    if (token.startsWith('-') && token !== '-') {
+    // After we have a command, `--` is just a positional argument.
+    if (endOfGlobalOptions && command === null) {
+      if (token.startsWith('-') && token !== '-') {
+        // This is a global flag after `--` before command: not allowed.
+        error = `unexpected option after --: ${token}`;
+        break;
+      }
+      // First non-flag after `--` is the command.
+      command = token;
+      endOfGlobalOptions = false; // allow flags after command
+      continue;
+    }
+
+    if (!endOfGlobalOptions && token.startsWith('-') && token !== '-') {
       let inlineValue = null;
       const equals = token.indexOf('=');
       if (equals !== -1) {
@@ -113,10 +129,16 @@ export function parseArgv(argv = []) {
         let value = inlineValue;
         if (value === null) {
           value = tokens.shift();
-          if (value === undefined || value.startsWith('-')) {
+          if (value === undefined) {
             error = `flag ${token} requires a value`;
             break;
           }
+          // A value starting with '-' is allowed in the separate-value form.
+          // It is not a flag because it appears where a value is expected.
+        }
+        if (value === '') {
+          error = `flag ${token} requires a non-empty value`;
+          break;
         }
         options[VALUE_FLAGS.get(token)] = value;
         continue;
@@ -161,35 +183,63 @@ export async function main(argv = process.argv.slice(2), io = {}) {
   });
 
   if (error) {
-    ui.error(error);
-    ui.note(GLOBAL_USAGE);
+    if (options.json) {
+      ui.emitJson({ ok: false, error, code: 2 });
+    } else {
+      ui.error(error);
+      ui.note(GLOBAL_USAGE);
+    }
     return 2;
   }
 
   if (options.version) {
-    ui.write(packageVersion());
+    if (options.json) {
+      ui.emitJson({ ok: true, version: packageVersion() });
+    } else {
+      ui.write(packageVersion());
+    }
     return 0;
   }
 
   if (command === 'help') {
-    ui.write(helpFor(null));
+    if (options.json) {
+      ui.emitJson({ ok: true, usage: GLOBAL_USAGE.trim() });
+    } else {
+      ui.write(helpFor(null));
+    }
     return 0;
   }
 
   if (options.help) {
-    ui.write(helpFor(command));
+    if (options.json) {
+      ui.emitJson({
+        ok: true,
+        usage: GLOBAL_USAGE.trim(),
+        commands: Array.from(COMMANDS.keys()),
+      });
+    } else {
+      ui.write(helpFor(command));
+    }
     return 0;
   }
 
   if (command === null) {
-    ui.note(GLOBAL_USAGE);
+    if (options.json) {
+      ui.emitJson({ ok: false, error: 'no command provided', code: 2 });
+    } else {
+      ui.note(GLOBAL_USAGE);
+    }
     return 2;
   }
 
   const known = COMMANDS.get(command);
   if (!known) {
-    ui.error(`unknown command: ${command}`);
-    ui.note(GLOBAL_USAGE);
+    if (options.json) {
+      ui.emitJson({ ok: false, error: `unknown command: ${command}`, code: 2 });
+    } else {
+      ui.error(`unknown command: ${command}`);
+      ui.note(GLOBAL_USAGE);
+    }
     return 2;
   }
 

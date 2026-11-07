@@ -1,5 +1,6 @@
 import { ensureAccount } from '../onboarding.js';
 import { grantState } from '../dsh-account.js';
+import { LockHeldError, acquireJournalLock } from '../journal.js';
 import { packageVersion } from '../paths.js';
 
 /**
@@ -15,74 +16,89 @@ import { packageVersion } from '../paths.js';
  * Everything else — the grant, the header, `models.json` — stays invisible.
  */
 export async function account({ options = {}, ui, layout, env = process.env, cliPath }) {
-  const status = grantState(layout.credentialsPath);
-  const interactive = ui.json ? false : process.stdin.isTTY === true && process.stdout.isTTY === true;
-
-  if (!ui.json) {
-    ui.banner({ version: packageVersion() });
+  let lock;
+  try {
+    lock = acquireJournalLock(layout);
+  } catch (error) {
+    if (error instanceof LockHeldError) {
+      ui.note(error.message);
+      return 1;
+    }
+    throw error;
   }
 
-  if (status.state === 'usable' && !options.relogin && !options.restart) {
-    ui.ok('account', `connected to ${status.issuer ?? 'DeepSeek'}`);
-    ui.blank();
-    ui.aside('Pi is spending this account. To switch accounts — for example when the quota runs out:');
-    ui.cmd('pi-dsh-bridge account --relogin');
+  try {
+    const status = grantState(layout.credentialsPath);
+    const interactive = ui.json ? false : process.stdin.isTTY === true && process.stdout.isTTY === true;
+
+    if (!ui.json) {
+      ui.banner({ version: packageVersion() });
+    }
+
+    if (status.state === 'usable' && !options.relogin && !options.restart) {
+      ui.ok('account', `connected to ${status.issuer ?? 'DeepSeek'}`);
+      ui.blank();
+      ui.aside('Pi is spending this account. To switch accounts — for example when the quota runs out:');
+      ui.cmd('pi-dsh-bridge account --relogin');
+      if (ui.json) {
+        ui.emitJson({
+          command: 'account',
+          ok: true,
+          state: 'usable',
+          issuer: status.issuer,
+          relogin: false,
+        });
+      }
+      return 0;
+    }
+
+    if (status.state !== 'usable') {
+      ui.warn('account', `${status.state}: ${status.detail}`);
+    }
+
+    ui.step(1, 2, options.restart ? 'Restarting the dsh web panel' : 'Opening the dsh web panel');
+
+    const result = await ensureAccount({
+      layout,
+      ui,
+      env,
+      cliPath,
+      open: options.open === true,
+      restart: options.restart === true || options.relogin === true,
+      interactive,
+      announce: false,
+    });
+
     if (ui.json) {
       ui.emitJson({
         command: 'account',
-        ok: true,
-        state: 'usable',
-        issuer: status.issuer,
-        relogin: false,
+        ok: result.ok,
+        state: result.state?.state ?? status.state,
+        issuer: result.state?.issuer ?? null,
+        changed: result.changed,
+        accountChanged: result.accountChanged,
+        url: result.url ?? null,
+        reason: result.reason ?? null,
       });
+      return result.ok ? 0 : 1;
     }
+
+    if (!result.ok) {
+      if (result.reason === 'not-interactive') {
+        ui.blank();
+        ui.aside('Sign in with that URL, then run: pi-dsh-bridge account');
+      }
+      return 1;
+    }
+
+    ui.blank();
+    ui.rule();
+    ui.ok('ready', 'Pi will use this account on its next start');
+    ui.cmd('pi');
     return 0;
+  } finally {
+    lock.release();
   }
-
-  if (status.state !== 'usable') {
-    ui.warn('account', `${status.state}: ${status.detail}`);
-  }
-
-  ui.step(1, 2, options.restart ? 'Restarting the dsh web panel' : 'Opening the dsh web panel');
-
-  const result = await ensureAccount({
-    layout,
-    ui,
-    env,
-    cliPath,
-    open: options.open === true,
-    restart: options.restart === true || options.relogin === true,
-    interactive,
-    announce: false,
-  });
-
-  if (ui.json) {
-    ui.emitJson({
-      command: 'account',
-      ok: result.ok,
-      state: result.state?.state ?? status.state,
-      issuer: result.state?.issuer ?? null,
-      changed: result.changed,
-      accountChanged: result.accountChanged,
-      url: result.url ?? null,
-      reason: result.reason ?? null,
-    });
-    return result.ok ? 0 : 1;
-  }
-
-  if (!result.ok) {
-    if (result.reason === 'not-interactive') {
-      ui.blank();
-      ui.aside('Sign in with that URL, then run: pi-dsh-bridge account');
-    }
-    return 1;
-  }
-
-  ui.blank();
-  ui.rule();
-  ui.ok('ready', 'Pi will use this account on its next start');
-  ui.cmd('pi');
-  return 0;
 }
 
 export const ACCOUNT_HELP = `Usage: pi-dsh-bridge account [options]

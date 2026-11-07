@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { createUi } from '../src/ui.js';
+import { createUi, displayWidth, truncate, visibleLength } from '../src/ui.js';
 import { writeFileAtomic } from '../src/fs-atomic.js';
 import { cleanupSandbox, createSandbox, readJson, run } from './helpers.js';
 
@@ -44,6 +44,65 @@ describe('terminal output', () => {
     ui.ok('node', '22.19.0');
     assert.match(stdout.text, /✓/);
     assert.match(stdout.text, /\u001b\[32m/);
+  });
+
+  it('uses ASCII symbols for piped stdout by default', () => {
+    const stdout = recorder({ isTTY: false });
+    const ui = createUi({ stdout, env: {} });
+    ui.ok('node', '22.19.0');
+    ui.box('Title', ['body']);
+    ui.rule();
+    assert.equal(ui.symbols.ok, '+');
+    assert.equal(ui.symbols.arrow, '->');
+    assert.match(stdout.text, /\+ node/);
+    assert.doesNotMatch(stdout.text, /[✓✗─→▸•·]/u);
+  });
+
+  it('honours explicit Unicode symbols for a piped stdout', () => {
+    const stdout = recorder({ isTTY: false });
+    const ui = createUi({ stdout, env: {}, unicode: true });
+    ui.ok('node', '22.19.0');
+    assert.match(stdout.text, /✓/);
+  });
+
+  it('measures visible text in terminal display columns', () => {
+    assert.equal(visibleLength('\u001b[31mred\u001b[0m'), 3);
+    assert.equal(visibleLength('界界'), 4);
+    assert.equal(visibleLength('😀'), 2);
+    assert.equal(visibleLength('👩‍💻'), 2);
+    assert.equal(visibleLength('❤️'), 2);
+    assert.equal(visibleLength('e\u0301'), 1);
+  });
+
+  it('truncates on grapheme boundaries within the display width', () => {
+    for (const [text, width] of [
+      ['界界', 3],
+      ['😀😀', 3],
+      ['👩‍💻xx', 3],
+      ['e\u0301x', 1],
+    ]) {
+      const result = truncate(text, width);
+      assert.ok(displayWidth(result) <= width, `${result} exceeds ${width}`);
+      assert.equal(
+        [...result].some((character) => {
+          const codePoint = character.codePointAt(0);
+          return codePoint >= 0xd800 && codePoint <= 0xdfff;
+        }),
+        false,
+        'truncation left a lone surrogate',
+      );
+    }
+    assert.equal(truncate('界界', 3), '界…');
+    assert.equal(truncate('👩‍💻xx', 3), '👩‍💻…');
+    assert.equal(truncate('e\u0301x', 1), 'e\u0301');
+  });
+
+  it('keeps box content aligned with wide characters', () => {
+    const stdout = recorder({ isTTY: true, columns: 50 });
+    const ui = createUi({ stdout, env: {}, color: false, unicode: false });
+    ui.box('界', ['界😀']);
+    const [top, content] = stdout.text.trimEnd().split('\n');
+    assert.equal(displayWidth(top), displayWidth(content));
   });
 
   it('degrades to plain ASCII when piped, dumb, or asked to', () => {
