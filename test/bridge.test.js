@@ -646,6 +646,30 @@ describe('the dsh web panel', () => {
       cleanupSandbox(box);
     }
   });
+
+  it('keeps the sign-in URL when the launcher exits before its output is drained', async () => {
+    const box = createSandbox();
+    try {
+      const port = await freePort();
+      // The launcher leaves a child that prints the URL after the launcher
+      // itself is already gone. The process exits first and the output
+      // arrives later, so a wait that settles on the exit alone loses it.
+      const launcherPath = writeLauncher(
+        box,
+        `( sleep 0.1; printf 'http://127.0.0.1:${port}/?token=deadbeef\\n' ) &\nexit 0`,
+      );
+      const started = await startDshWeb({
+        launcherPath,
+        env: { DSH_PORT: String(port), PATH: '/usr/bin:/bin' },
+        timeoutMs: 10_000,
+        killGroup: () => {},
+      });
+
+      assert.equal(started.url, `http://127.0.0.1:${port}/?token=deadbeef`);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
 });
 
 describe('the shared provider plan', () => {

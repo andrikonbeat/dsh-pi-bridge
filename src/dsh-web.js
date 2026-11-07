@@ -20,6 +20,15 @@ export const DEFAULT_PORT = 3080;
 /** A URL that carries the panel's session token. */
 const TOKEN_URL = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)\/?\?token=[A-Za-z0-9._~-]+/;
 
+/**
+ * How long the wait keeps listening for output after the launcher exits.
+ *
+ * Long enough for a pipe that still has a writer on it to deliver what is
+ * already buffered, short enough that a stream nobody closes cannot hold the
+ * wait for the whole timeout.
+ */
+const EXIT_DRAIN_GRACE_MS = 500;
+
 /** The one message a bad `DSH_PORT` produces. */
 export function portError(value) {
   return `DSH_PORT must be an integer between 1 and 65535, got "${value}"`;
@@ -202,7 +211,35 @@ export async function startDshWeb({
     // Any exit settles the wait, whatever the code: a launcher that exits 0
     // without printing a URL will never print one afterwards, so burning the
     // whole timeout only delays the truth.
-    child.once('exit', (code, signal) => finish({ url: null, reason: 'exit', code, signal }));
+    //
+    // The exit does not settle it *immediately*: the process can be gone
+    // while its output is still in the pipe, because a launcher that leaves
+    // a child behind (a shell backgrounding its worker) exits first and the
+    // child's output arrives after. Settling on the exit alone throws that
+    // URL away, and the user is told the panel never printed one. So the
+    // exit waits for the streams to end, with a short grace period so a
+    // stream that never ends cannot hold the wait for the whole timeout.
+    child.once('exit', (code, signal) => {
+      const settle = () => finish({ url: null, reason: 'exit', code, signal });
+      const streams = [child.stdout, child.stderr].filter((stream) => stream && !stream.destroyed);
+      if (streams.length === 0) {
+        settle();
+        return;
+      }
+      let pending = streams.length;
+      const onDrained = () => {
+        pending -= 1;
+        if (pending === 0) settle();
+      };
+      for (const stream of streams) {
+        stream.once('end', onDrained);
+        stream.once('close', onDrained);
+        stream.once('error', onDrained);
+      }
+      // A stream that stays open forever must not hold the wait: the grace
+      // period is shorter than the timeout, so the truth is still told.
+      setTimeout(() => settle(), EXIT_DRAIN_GRACE_MS).unref?.();
+    });
   });
 
   // The panel keeps running after this CLI exits: that is the point. Detach it
