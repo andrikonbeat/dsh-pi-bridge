@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../paths.js';
-import { checkDshVersion } from '../compat.js';
+import { checkDshPresetCompatibility, checkDshVersion } from '../compat.js';
 import { describeRoute, diverges, probe } from '../dsh.js';
 import { nodeCheck, preflight } from '../preflight.js';
 import { loadSettings, settingsMismatch } from '../settings.js';
@@ -226,6 +226,20 @@ export function doctor({ options = {}, ui, layout, env = process.env, cliPath })
     !facts.dsh.found
       ? { status: 'fail', detail: 'dsh not found on PATH; install @deepseek-ai/dsh or fix PATH' }
       : { status: dshVersion.status, detail: `${facts.dsh.path}: ${dshVersion.detail}` },
+  );
+
+  // A dsh outside the matrix is untested, not broken. A dsh that cannot
+  // mount an agent preset is broken: the web panel opens and then refuses
+  // every new session, which reads like a bridge bug and is not one.
+  push(
+    'dsh-preset',
+    'agent presets can mount (new sessions start)',
+    !facts.dsh.found
+      ? {
+          status: 'warn',
+          detail: 'dsh not found; the agent preset compatibility was not checked',
+        }
+      : checkDshPresetCompatibility(facts.dsh.version),
   );
 
   let settings = null;

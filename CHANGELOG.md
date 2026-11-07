@@ -66,12 +66,23 @@ is actually on disk.
   started by that run is stopped as a process group instead of being left
   behind, and the run reports the interruption.
 
+- `doctor` reports a new `dsh-preset` check: whether the installed `dsh` can
+  mount an agent preset at all. A version outside the compatibility matrix is
+  still only a warning; a version that cannot mount a preset is a failure.
+- A "Known-broken dsh builds" table in `docs/compatibility.md`, and a
+  troubleshooting entry for the exact
+  `agent-preset/invalid: Cannot read properties of undefined (reading 'parent')`
+  failure.
+- `start-web.sh` refuses to start `dsh 0.2.2-alpha.2`, whose preset registry
+  cannot mount any preset. The web panel used to open and then reject every
+  new session with
+  `agent-preset/invalid: Cannot read properties of undefined (reading 'parent')`,
+  which read like a bridge failure and was not one.
 - The launcher no longer dies on macOS before it starts the web panel. It
   joined the PATH entries with `paste -sd:`, a bundled short-option form
   that the BSD `paste` rejects with a usage message, so on macOS the script
   aborted on its first line. The entries are now joined with `tr`/`sed`,
   which behave the same on both systems.
-
 
 ### Changed
 
