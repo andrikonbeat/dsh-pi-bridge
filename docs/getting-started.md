@@ -110,6 +110,10 @@ it is a local address with a token in it, not the DeepSeek site. A plain
 Sign in with your DeepSeek account. The bridge notices, re-wires Pi, and says
 so. There is no token to copy and nothing to paste.
 
+The command opens the panel in your browser by itself, and prints the sign-in
+URL in full so you can open it by hand if you prefer. A scripted run — CI, a
+pipe, a headless box — prints the URL and never launches a browser.
+
 If you closed the panel, or you want a different account:
 
 ```bash
@@ -184,6 +188,7 @@ start uses the new account.
 | `dsh-account: absent` | not signed in, or dsh rewrote its credential file | `pi-dsh-bridge account`, then open the printed URL. If dsh logged you out on its own, re-authenticate once and the bridge re-syncs |
 | `the DeepSeek account dashboard is blocked from this machine (HTTP 403)` | your network is blocked by Cloudflare | use a clean VPN, or set `HTTPS_PROXY` for the dsh process only. Inference still works; only the account panel is affected |
 | `dsh-preset` fails and names `0.2.2-alpha.2` | a broken dsh build | `npm install -g @deepseek-ai/dsh@0.2.2-alpha.3` |
+| `disabling profile plugin row "translator"` | the dsh profile still pins a plugin to the version you just left | `dsh plugin --profile web add @deepseek-ai/dsh-experimental-translator@0.2.2-alpha.3 @deepseek-ai/dsh-experimental-client-ui-cot-translation@0.2.2-alpha.3` |
 | `the account route did not answer` | the network cannot reach DeepSeek | check your proxy or VPN; `doctor` still works offline |
 | `neither DSH_HOME nor HOME is set` | no home directory to resolve paths against | set `HOME` or `DSH_HOME` |
 | `journal is locked` | another mutating run is in progress | wait for it to finish; the lock is taken over automatically if that run died |
