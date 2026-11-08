@@ -12,6 +12,13 @@ is actually on disk.
 
 ### Fixed
 
+- The sign-in URL was truncated with an ellipsis inside the box, so the
+  address the user copied was broken and the panel never opened. It is now
+  printed on its own line, in full, whatever the terminal width.
+- `pi-dsh-bridge account` printed the sign-in URL and left the user to copy
+  it, while `dsh web` opened the interface by itself. The account command now
+  opens the browser when a human is at the terminal, the way `dsh web` does,
+  and still prints the URL for a scripted run that must not launch a browser.
 - `uninstall` keeps any file whose current bytes are not provably the bytes
   `install` wrote, and names the reason, instead of deleting the file the user
   edited. Journal entries now record a `sha256` of what was written, and the
