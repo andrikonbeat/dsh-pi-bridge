@@ -25,8 +25,13 @@ is actually on disk.
   Pi). The same stale command was removed from the README and the
   troubleshooting guide.
 - The README quick path started with `npx pi-dsh-bridge install`, which
-  answers 404 until the package is published. It now shows the global install
-  and, for that window, the checkout path that works.
+  answers 404 until the package is published. It now shows the install from a
+  checkout, and, for that window, says plainly that the 404 is expected rather
+  than a broken install.
+- The getting-started guide now names the case where dsh cancels its own
+  sign-in and leaves `~/.dsh/.credentials.yaml` without the account grant:
+  `doctor` reports `dsh-account: absent`, the API-key route keeps working,
+  and signing in again plus `pi-dsh-bridge sync` is all it takes.
 
 - `uninstall` keeps any file whose current bytes are not provably the bytes
   `install` wrote, and names the reason, instead of deleting the file the user

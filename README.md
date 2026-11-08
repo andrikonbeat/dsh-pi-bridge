@@ -20,9 +20,10 @@ Zero runtime dependencies.
 ## TL;DR
 
 ```bash
-npm install -g pi-dsh-bridge    # one command: wires everything and connects your account
-pi                             # use it
-pi-dsh-bridge account          # only when you switch accounts
+npm install -g .                # from a checkout; wires the CLI
+pi-dsh-bridge install           # wires Pi, opens the panel, waits for your sign-in
+pi                              # use it
+pi-dsh-bridge account           # only when you switch accounts
 ```
 
 **New here?** [`docs/getting-started.md`](docs/getting-started.md) is the
@@ -30,8 +31,8 @@ step-by-step version: what to install first, what the install writes, how to
 sign in, and what to do when a step does not go as planned.
 
 > **Not on npm yet?** This package is published by pushing a version tag, so
-> until that happens `npm install -g pi-dsh-bridge` answers 404. Install from a
-> checkout instead:
+> until that happens `npm install -g pi-dsh-bridge` answers **404 Not Found**.
+> That is expected, not a broken install. Clone and install from the checkout:
 >
 > ```bash
 > git clone https://github.com/andrikonbeat/dsh-pi-bridge.git
@@ -245,7 +246,7 @@ something else are in [`docs/compatibility.md`](docs/compatibility.md).
 ## Troubleshooting
 
 See [`docs/troubleshooting.md`](docs/troubleshooting.md). If you are filing a
-bug, include the output of `npx pi-dsh-bridge doctor --json`.
+bug, include the output of `pi-dsh-bridge doctor --json`.
 
 ## Development
 

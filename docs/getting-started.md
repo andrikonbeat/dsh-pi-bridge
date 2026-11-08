@@ -10,8 +10,8 @@ It takes about ten minutes, most of which is the DeepSeek sign-in.
 ## The quick path
 
 ```bash
-# 1. install (wires Pi, opens the panel, waits for your sign-in)
-npm install -g pi-dsh-bridge
+# 1. install (from a checkout; see the note below if npm has it)
+npm install -g .
 pi-dsh-bridge install
 
 # 2. confirm it is wired
@@ -23,6 +23,16 @@ pi
 
 If `doctor` ends with `doctor: no failures`, you are done. Everything below is
 what happens underneath, and what to do when a step does not go as expected.
+
+> **Not on npm yet?** This package is published by pushing a version tag, so
+> until that happens `npm install -g pi-dsh-bridge` answers **404 Not Found**.
+> That is expected, not a broken install. Use the checkout instead:
+>
+> ```bash
+> git clone https://github.com/andrikonbeat/dsh-pi-bridge.git
+> cd dsh-pi-bridge
+> npm install -g .
+> ```
 
 ## Before you start
 
@@ -52,16 +62,19 @@ npm install -g @deepseek-ai/dsh
 ## Step 1 — Install
 
 ```bash
-npm install -g pi-dsh-bridge
+npm install -g .
 pi-dsh-bridge install
 ```
+
+From a checkout. If npm already carries the package, `npm install -g
+pi-dsh-bridge` is the same thing.
 
 If npm does not have the package yet, install from a checkout instead:
 
 ```bash
 git clone https://github.com/andrikonbeat/dsh-pi-bridge.git
 cd dsh-pi-bridge
-npm install -g ./pi-dsh-bridge-0.2.0.tgz   # after `npm pack`
+npm install -g .        # or: ./install.sh
 ```
 
 To see the plan before anything is written:
@@ -102,6 +115,13 @@ If you closed the panel, or you want a different account:
 ```bash
 pi-dsh-bridge account
 ```
+
+> **The panel can log you out on its own.** dsh owns
+> `~/.dsh/.credentials.yaml`, and a panel start that cannot reach DeepSeek
+> cancels its sign-in and leaves the file without the account grant. The
+> bridge then reports `dsh-account: absent` and keeps the API-key route
+> working. Sign in again from the panel and run `pi-dsh-bridge sync`; nothing
+> else needs reinstalling.
 
 You do **not** need a separate DeepSeek API key. The account token is read on
 demand from the dsh credentials store and travels in a request header; it is
@@ -161,9 +181,9 @@ start uses the new account.
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
+| `dsh-account: absent` | not signed in, or dsh rewrote its credential file | `pi-dsh-bridge account`, then open the printed URL. If dsh logged you out on its own, re-authenticate once and the bridge re-syncs |
 | `the DeepSeek account dashboard is blocked from this machine (HTTP 403)` | your network is blocked by Cloudflare | use a clean VPN, or set `HTTPS_PROXY` for the dsh process only. Inference still works; only the account panel is affected |
 | `dsh-preset` fails and names `0.2.2-alpha.2` | a broken dsh build | `npm install -g @deepseek-ai/dsh@0.2.2-alpha.3` |
-| `dsh-account: absent` | not signed in yet | `pi-dsh-bridge account`, then open the printed URL |
 | `the account route did not answer` | the network cannot reach DeepSeek | check your proxy or VPN; `doctor` still works offline |
 | `neither DSH_HOME nor HOME is set` | no home directory to resolve paths against | set `HOME` or `DSH_HOME` |
 | `journal is locked` | another mutating run is in progress | wait for it to finish; the lock is taken over automatically if that run died |
