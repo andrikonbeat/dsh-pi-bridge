@@ -20,10 +20,24 @@ Zero runtime dependencies.
 ## TL;DR
 
 ```bash
-npx pi-dsh-bridge install    # one command: wires everything and connects your account
-pi                           # use it
-npx pi-dsh-bridge account    # only when you switch accounts
+npm install -g pi-dsh-bridge    # one command: wires everything and connects your account
+pi                             # use it
+pi-dsh-bridge account          # only when you switch accounts
 ```
+
+**New here?** [`docs/getting-started.md`](docs/getting-started.md) is the
+step-by-step version: what to install first, what the install writes, how to
+sign in, and what to do when a step does not go as planned.
+
+> **Not on npm yet?** This package is published by pushing a version tag, so
+> until that happens `npm install -g pi-dsh-bridge` answers 404. Install from a
+> checkout instead:
+>
+> ```bash
+> git clone https://github.com/andrikonbeat/dsh-pi-bridge.git
+> cd dsh-pi-bridge
+> npm install -g .        # or: ./install.sh
+> ```
 
 `install` ends by opening the dsh web panel, handing you the sign-in URL and
 waiting until the account appears — you do not have to understand what a grant,
@@ -92,7 +106,7 @@ repository, so pulling a new version never lands on top of your backups.
 | `pi` on `PATH` | installs Pi's DeepSeek defaults, and `verify` drives it |
 | `dsh` on `PATH` | the web launcher execs it; `doctor` reports version drift |
 | A DeepSeek account | sign in to DeepSeek in the dsh web interface; both sides read that account |
-| A DeepSeek API key (optional) | `pi auth login --provider deepseek`; kept as the explicit fallback route |
+| A DeepSeek API key (optional) | run `/login` inside Pi and choose DeepSeek; kept as the explicit fallback route |
 
 The CLI itself has **zero runtime dependencies**: `npx` is instant and there is
 no transitive supply chain to audit.
