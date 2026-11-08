@@ -411,12 +411,8 @@ export async function install({ options = {}, ui, layout, env = process.env, cli
         ui,
         env,
         cliPath,
-        // Same rule as `account`: a human at the terminal gets the panel
-        // opened for them; a scripted run gets the URL printed and nothing
-        // launched. `--no-open` still wins over everything.
-        open: (options.open === true || ui.interactive === true) && options.noOpen !== true,
+        open: options.open === true && options.noOpen !== true,
         restart: false,
-        interactive: ui.interactive === true,
         announce: false,
       });
       ui.blank();

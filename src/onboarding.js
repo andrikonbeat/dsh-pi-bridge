@@ -182,14 +182,11 @@ async function presentSignIn({ layout, ui, env, open, restart, interactive, befo
       'Pi will use the same account as the dsh web panel.',
       'Open this address in your browser:',
       '',
+      `  ${url}`,
+      '',
       SIGN_IN_HINT,
       'Keep this page: it is where you change accounts later, too.',
     ]);
-    // The URL sits outside the box: the box truncates its lines to the
-    // terminal width, and a sign-in URL that lost its tail would not open.
-    ui.blank();
-    ui.copyable(url);
-    ui.blank();
     if (open) {
       const opened = openInBrowser(url, { env });
       ui.aside(opened ? 'Opening it in your browser…' : 'Could not open a browser; open the address above yourself.');

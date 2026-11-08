@@ -237,13 +237,6 @@ export function createUi({
     color: useColor,
     unicode: useUnicode,
     symbols,
-    /**
-     * Whether a human is present to answer a prompt.
-     *
-     * The commands use it to decide whether to open a browser: a headless
-     * box, a CI job or an SSH session must print a URL, not launch one.
-     */
-    interactive: isInteractive,
 
     line(text = '') {
       if (!json) write(stdout, text);
@@ -318,18 +311,6 @@ export function createUi({
     cmd(text) {
       if (json) return;
       write(stdout, `   ${paint('bold', paint('magenta', text))}`);
-    },
-
-    /**
-     * A value the user has to copy exactly: a sign-in URL, a token, a path.
-     *
-     * It is printed on its own line and never truncated, never shortened and
-     * never wrapped. A sign-in URL that loses its tail is not a sign-in URL,
-     * and a narrow terminal must not decide how much of it the user gets.
-     */
-    copyable(text) {
-      if (json) return;
-      write(stdout, `  ${text}`);
     },
 
     /** A boxed message: the place where the one thing to do is stated. */
