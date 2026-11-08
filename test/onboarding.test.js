@@ -5,15 +5,18 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
+import { account } from '../src/commands/account.js';
 import { GRANT_RECORD_KEY, accountGrantStatus, grantState } from '../src/dsh-account.js';
 import { stopPanelGroup } from '../src/dsh-web.js';
 import { ensureAccount, waitForGrant } from '../src/onboarding.js';
 import { resolveLayout } from '../src/paths.js';
+import { createUi } from '../src/ui.js';
 import { CLI, cleanupSandbox, createSandbox } from './helpers.js';
 
 const FIRST_TOKEN = 'account-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const SECOND_TOKEN = 'account-token-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const ISSUER = 'https://platform.deepseek.com';
+const SIGN_IN_TOKEN = '-fvkaKFnnMrE-X8k9Zen9vYCmQvoWPsM_fSNdwF8fuM';
 
 /** The credentials file dsh writes when the user signs in. */
 function grantYaml(token) {
@@ -61,18 +64,92 @@ function fakeUi() {
     error: record('error'),
     step: record('step'),
     ok: record('ok'),
+    copyable: record('copyable'),
     waitForEnter: async () => {},
   };
 }
 
-function writeLauncher(layout, token) {
+function writeLauncher(layout, token, signInToken = 'test-token') {
   fs.mkdirSync(layout.dshHome, { recursive: true });
   fs.writeFileSync(
     layout.launcherPath,
     `#!/bin/sh\ncat > '${layout.credentialsPath}' <<'YAML'\n${grantYaml(token)}YAML\n` +
-      "printf 'open http://127.0.0.1:%s/?token=test-token\\n' \"$DSH_PORT\"\n",
+      `printf 'open http://127.0.0.1:%s/?token=${signInToken}\\n' "$DSH_PORT"\n`,
     { mode: 0o755 },
   );
+}
+
+function recordingStdout({ isTTY = false, columns = 80 } = {}) {
+  const chunks = [];
+  return {
+    isTTY,
+    columns,
+    write(chunk) {
+      chunks.push(String(chunk));
+      return true;
+    },
+    get text() {
+      return chunks.join('');
+    },
+  };
+}
+
+function terminalStdin({ isTTY = true } = {}) {
+  return {
+    isTTY,
+    resume() {},
+    pause() {},
+    on() {},
+    removeListener() {},
+    once(event, handler) {
+      if (event === 'data' && isTTY) {
+        setImmediate(() => handler(Buffer.from('\n')));
+      }
+    },
+  };
+}
+
+function accountEnv(box, port) {
+  return {
+    PATH: `${box.fakebin}:${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+    DSH_PORT: String(port),
+    HOME: box.root,
+    PI_CODING_AGENT_DIR: box.piHome,
+    DSH_HOME: box.dshHome,
+    BIN_DIR: box.binDir,
+    STATE_DIR: box.stateDir,
+    NO_COLOR: '1',
+  };
+}
+
+function layoutFor(box, env) {
+  return resolveLayout({
+    flags: {
+      piHome: box.piHome,
+      dshHome: box.dshHome,
+      binDir: box.binDir,
+      stateDir: box.stateDir,
+    },
+    env,
+    home: box.root,
+  });
+}
+
+function writeBrowserOpener(box, marker) {
+  const command = process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const file = path.join(box.fakebin, command);
+  fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "$1" > '${marker}'\n`, { mode: 0o755 });
+  fs.chmodSync(file, 0o755);
+  return file;
+}
+
+async function waitForFile(file, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(file)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return fs.existsSync(file);
 }
 
 async function signIn(sandbox, { token, before = null }) {
@@ -278,6 +355,122 @@ describe('ensureAccount reports an account switch (S8)', () => {
       const { result } = await signIn(box, { token: FIRST_TOKEN, before: null });
       assert.equal(result.ok, true, result.reason ?? '');
       assert.equal(result.accountChanged, false);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+});
+
+describe('the sign-in URL the user has to copy', () => {
+  /**
+   * Run `account` against a fake launcher that reports a sign-in URL, and
+   * return everything the user would have seen.
+   */
+  async function runAccount({ columns = 80, interactive = true }) {
+    const box = createSandbox();
+    const env = accountEnv(box, 39_999);
+    const layout = layoutFor(box, env);
+    writeLauncher(layout, FIRST_TOKEN, SIGN_IN_TOKEN);
+
+    const stdout = recordingStdout({ isTTY: interactive, columns });
+    const stderr = recordingStdout({ isTTY: interactive, columns });
+    const stdin = terminalStdin({ isTTY: interactive });
+    const ui = createUi({ json: false, stdout, stderr, stdin, env });
+
+    const code = await account({
+      options: {},
+      ui,
+      layout,
+      env,
+      cliPath: CLI,
+    });
+    return { box, code, out: stdout.text, err: stderr.text };
+  }
+
+  it('prints the whole URL, with nothing cut off', async () => {
+    const { box, out } = await runAccount({ columns: 80 });
+    try {
+      const expected = `http://127.0.0.1:39999/?token=${SIGN_IN_TOKEN}`;
+      assert.ok(
+        out.includes(expected),
+        `the URL must appear whole; got:\n${out}`,
+      );
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('prints the whole URL even when the terminal is narrow', async () => {
+    const { box, out } = await runAccount({ columns: 40 });
+    try {
+      const expected = `http://127.0.0.1:39999/?token=${SIGN_IN_TOKEN}`;
+      assert.ok(
+        out.includes(expected),
+        `a narrow terminal must not truncate the URL; got:\n${out}`,
+      );
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('opens the browser when a human is there', async () => {
+    const box = createSandbox();
+    try {
+      const env = accountEnv(box, 39_998);
+      const layout = layoutFor(box, env);
+      writeLauncher(layout, FIRST_TOKEN, SIGN_IN_TOKEN);
+      const marker = path.join(box.root, 'opened-url.txt');
+      writeBrowserOpener(box, marker);
+
+      const stdout = recordingStdout({ isTTY: true, columns: 80 });
+      const stderr = recordingStdout({ isTTY: true, columns: 80 });
+      const ui = createUi({
+        json: false,
+        stdout,
+        stderr,
+        stdin: terminalStdin({ isTTY: true }),
+        env,
+      });
+
+      await account({ options: {}, ui, layout, env, cliPath: CLI });
+
+      const opened = await waitForFile(marker);
+      assert.equal(opened, true, 'the sign-in URL was never handed to the browser');
+      assert.ok(
+        fs.readFileSync(marker, 'utf8').includes(SIGN_IN_TOKEN),
+        'the browser got the sign-in URL',
+      );
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
+  it('does not open a browser when nobody is there to use it', async () => {
+    const box = createSandbox();
+    try {
+      const env = accountEnv(box, 39_997);
+      const layout = layoutFor(box, env);
+      writeLauncher(layout, FIRST_TOKEN, SIGN_IN_TOKEN);
+      const marker = path.join(box.root, 'opened-url.txt');
+      writeBrowserOpener(box, marker);
+
+      const stdout = recordingStdout({ isTTY: false, columns: 80 });
+      const stderr = recordingStdout({ isTTY: false, columns: 80 });
+      const ui = createUi({
+        json: false,
+        stdout,
+        stderr,
+        stdin: terminalStdin({ isTTY: false }),
+        env,
+      });
+
+      await account({ options: {}, ui, layout, env, cliPath: CLI });
+
+      assert.equal(
+        fs.existsSync(marker),
+        false,
+        'a non-interactive run must not launch a browser',
+      );
     } finally {
       cleanupSandbox(box);
     }
