@@ -78,7 +78,9 @@ function credentialCheck(authPath, env) {
   if (stored.state === 'absent') {
     return {
       status: 'warn',
-      detail: `${stored.detail}; the API-key fallback route is unavailable. Run: pi auth login --provider deepseek`,
+      detail:
+        `${stored.detail}; the API-key fallback route is unavailable. ` +
+        'Run /login inside Pi and choose DeepSeek to store an API key',
     };
   }
   if (stored.state === 'unusable') {
