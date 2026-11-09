@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 /**
  * Starting and finding the dsh web panel.
@@ -28,6 +30,25 @@ const TOKEN_URL = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)\/?\?token
  * wait for the whole timeout.
  */
 const EXIT_DRAIN_GRACE_MS = 500;
+
+/**
+ * How often the panel's output file is read while waiting for its URL.
+ */
+const OUTPUT_POLL_MS = 100;
+
+/**
+ * Where the panel's output is written when this process starts it.
+ *
+ * A pipe belongs to the process that created it: when that process exits, the
+ * pipe closes, and the panel's next log line lands on a closed pipe and kills
+ * it. dsh logs at runtime (a failed model listing, a gateway error), so a
+ * panel started through a pipe died on its first message and took the web UI
+ * with it. A file has no reader to lose: the panel keeps writing to it after
+ * this process is gone.
+ */
+function panelOutputPath(port, logDir) {
+  return path.join(logDir, `pi-dsh-bridge-web-${port}.log`);
+}
 
 /** The one message a bad `DSH_PORT` produces. */
 export function portError(value) {
@@ -148,6 +169,7 @@ export async function startDshWeb({
   env = process.env,
   port,
   timeoutMs = 30_000,
+  logDir = os.tmpdir(),
   killGroup = (target, signal) => process.kill(target, signal),
 } = {}) {
   const resolved = resolveDshPort(port, env);
@@ -182,74 +204,77 @@ export async function startDshWeb({
     };
   }
 
+  const outputPath = panelOutputPath(chosen, logDir);
+  let outputFd = null;
+  try {
+    outputFd = fs.openSync(outputPath, 'w');
+  } catch (error) {
+    return {
+      url: null,
+      alreadyRunning: false,
+      port: chosen,
+      pid: null,
+      error: `the panel output file could not be opened at ${outputPath}: ${error.message}`,
+    };
+  }
+
   const child = spawn('bash', [launcherPath], {
     env: { ...env, DSH_PORT: String(chosen) },
     detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // The panel writes to a file, not to a pipe of this process: a pipe dies
+    // with this process, and the panel's first log line after that would
+    // kill it. The file outlives the CLI, so the panel outlives it too.
+    stdio: ['ignore', outputFd, outputFd],
   });
+  fs.closeSync(outputFd);
 
-  const collected = [];
+  const readOutput = () => {
+    try {
+      return fs.readFileSync(outputPath, 'utf8');
+    } catch {
+      return '';
+    }
+  };
+
   const outcome = await new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
+      clearInterval(poller);
       clearTimeout(timer);
       resolve(value);
     };
-    const onChunk = (chunk) => {
-      collected.push(chunk.toString());
-      // Match the accumulated buffer, not the chunk: the URL can be split
-      // across two `data` events and is then never whole inside either.
-      const match = collected.join('').match(TOKEN_URL);
+    const poll = () => {
+      // Match the whole file, not a chunk: the URL can be split across two
+      // writes and is then never whole inside either.
+      const match = readOutput().match(TOKEN_URL);
       if (match) finish({ url: match[0], reason: null });
     };
+    const poller = setInterval(poll, OUTPUT_POLL_MS);
+    poller.unref?.();
     const timer = setTimeout(() => finish({ url: null, reason: 'timeout' }), timeoutMs);
-    if (child.stdout) child.stdout.on('data', onChunk);
-    if (child.stderr) child.stderr.on('data', onChunk);
     child.once('error', (error) => finish({ url: null, reason: 'error', error }));
     // Any exit settles the wait, whatever the code: a launcher that exits 0
     // without printing a URL will never print one afterwards, so burning the
     // whole timeout only delays the truth.
     //
     // The exit does not settle it *immediately*: the process can be gone
-    // while its output is still in the pipe, because a launcher that leaves
-    // a child behind (a shell backgrounding its worker) exits first and the
-    // child's output arrives after. Settling on the exit alone throws that
-    // URL away, and the user is told the panel never printed one. So the
-    // exit waits for the streams to end, with a short grace period so a
-    // stream that never ends cannot hold the wait for the whole timeout.
+    // while its output is still being written, because a launcher that
+    // leaves a child behind (a shell backgrounding its worker) exits first
+    // and the child's output arrives after. Settling on the exit alone
+    // throws that URL away, and the user is told the panel never printed
+    // one. So the exit waits a short grace period and reads the file once
+    // more before telling the truth.
     child.once('exit', (code, signal) => {
-      const settle = () => finish({ url: null, reason: 'exit', code, signal });
-      const streams = [child.stdout, child.stderr].filter((stream) => stream && !stream.destroyed);
-      if (streams.length === 0) {
-        settle();
-        return;
-      }
-      let pending = streams.length;
-      const onDrained = () => {
-        pending -= 1;
-        if (pending === 0) settle();
-      };
-      for (const stream of streams) {
-        stream.once('end', onDrained);
-        stream.once('close', onDrained);
-        stream.once('error', onDrained);
-      }
-      // A stream that stays open forever must not hold the wait: the grace
-      // period is shorter than the timeout, so the truth is still told.
-      setTimeout(() => settle(), EXIT_DRAIN_GRACE_MS).unref?.();
+      setTimeout(() => {
+        const match = readOutput().match(TOKEN_URL);
+        if (match) finish({ url: match[0], reason: null });
+        else finish({ url: null, reason: 'exit', code, signal });
+      }, EXIT_DRAIN_GRACE_MS).unref?.();
     });
+    poll();
   });
-
-  // The panel keeps running after this CLI exits: that is the point. Detach it
-  // so the CLI does not wait, and so the terminal is not held by a pipe.
-  for (const stream of [child.stdout, child.stderr]) {
-    if (stream) {
-      stream.removeAllListeners('data');
-      stream.destroy();
-    }
-  }
 
   if (!outcome.url && child.pid) {
     // No URL means this child will never hand over the tokenised address, so it
@@ -268,26 +293,26 @@ export async function startDshWeb({
     alreadyRunning: false,
     port: chosen,
     pid: child.pid ?? null,
-    error: outcome.url ? null : failureMessage(outcome, collected, timeoutMs),
+    error: outcome.url ? null : failureMessage(outcome, readOutput(), timeoutMs),
   };
 }
 
 /** The last few captured lines, for a message the user can act on. */
-function capturedOutput(collected) {
-  const text = collected.join('').trim();
-  if (!text) return 'no output';
-  return text.split('\n').slice(-3).join(' | ').slice(0, 240);
+function capturedOutput(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return 'no output';
+  return trimmed.split('\n').slice(-3).join(' | ').slice(0, 240);
 }
 
-function failureMessage(outcome, collected, timeoutMs) {
+function failureMessage(outcome, outputText, timeoutMs) {
   if (outcome.reason === 'exit') {
     const how = outcome.signal ? `signal ${outcome.signal}` : `code ${outcome.code}`;
-    return `dsh web exited (${how}) without printing a sign-in URL: ${capturedOutput(collected)}`;
+    return `dsh web exited (${how}) without printing a sign-in URL: ${capturedOutput(outputText)}`;
   }
   if (outcome.reason === 'error') {
     return `dsh web could not be started: ${outcome.error?.message ?? 'unknown error'}`;
   }
-  return `dsh web did not print a sign-in URL within ${Math.round(timeoutMs / 1000)}s: ${capturedOutput(collected)}`;
+  return `dsh web did not print a sign-in URL within ${Math.round(timeoutMs / 1000)}s: ${capturedOutput(outputText)}`;
 }
 
 /** Read a process command line, or null when it cannot be read. */

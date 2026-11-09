@@ -12,6 +12,10 @@ is actually on disk.
 
 ### Fixed
 
+- The dsh web panel no longer dies when the CLI that started it goes away. Its
+  output goes to a file instead of a pipe: a pipe closes with the process that
+  read it, so the panel's first log line after that landed on a closed pipe and
+  killed it, leaving the web UI reconnecting to a panel that was gone.
 - `uninstall` keeps any file whose current bytes are not provably the bytes
   `install` wrote, and names the reason, instead of deleting the file the user
   edited. Journal entries now record a `sha256` of what was written, and the
