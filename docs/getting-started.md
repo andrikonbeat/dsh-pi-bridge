@@ -110,6 +110,18 @@ it is a local address with a token in it, not the DeepSeek site. A plain
 Sign in with your DeepSeek account. The bridge notices, re-wires Pi, and says
 so. There is no token to copy and nothing to paste.
 
+**Where to click.** The sign-in is inside the panel, not on the DeepSeek site:
+
+1. Open the panel URL (the command opens it for you).
+2. Click **Account menu** — the button in the top-right corner of the panel.
+3. Click **Sign in** in that menu.
+4. A DeepSeek sign-in window opens. Log in there; it can ask for a browser
+   check first, which is the site's own protection and resolves on its own.
+5. Come back to the terminal and press **Enter**.
+
+The bridge watches for the account grant while you do this and wires Pi as
+soon as it appears.
+
 The command opens the panel in your browser by itself, and prints the sign-in
 URL in full so you can open it by hand if you prefer. A scripted run — CI, a
 pipe, a headless box — prints the URL and never launches a browser.
