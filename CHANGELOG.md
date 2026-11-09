@@ -34,6 +34,8 @@ is actually on disk.
   dashboard's WAF turns away a plain command line client and asks a browser
   for a check instead, so the old probe reported the dashboard as blocked
   from this machine for a dashboard the user's browser can open.
+- The getting-started guide now names where the sign-in is: the `Account menu`
+  in the panel, then `Sign in`. It said to sign in without saying where.
 - The sign-in URL was truncated with an ellipsis inside the box, so the
   address the user copied was broken and the panel never opened. It is now
   printed on its own line, in full, whatever the terminal width.
