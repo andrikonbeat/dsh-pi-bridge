@@ -29,7 +29,7 @@ export async function account({ options = {}, ui, layout, env = process.env, cli
 
   try {
     const status = grantState(layout.credentialsPath);
-    const interactive = ui.json ? false : process.stdin.isTTY === true && process.stdout.isTTY === true;
+    const interactive = ui.json ? false : ui.interactive === true;
 
     if (!ui.json) {
       ui.banner({ version: packageVersion() });
@@ -63,7 +63,10 @@ export async function account({ options = {}, ui, layout, env = process.env, cli
       ui,
       env,
       cliPath,
-      open: options.open === true,
+      // A human is present: open the panel for them, the way `dsh web`
+      // does. `--open` still forces it, and a non-interactive run never
+      // launches a browser.
+      open: interactive || options.open === true,
       restart: options.restart === true || options.relogin === true,
       interactive,
       announce: false,

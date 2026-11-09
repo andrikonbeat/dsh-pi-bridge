@@ -10,6 +10,13 @@ Hardening: the bridge can no longer destroy work it did not create, and the
 things it reported about a broken credential or a lost web panel now match what
 is actually on disk.
 
+### Added
+
+- `docs/getting-started.md`: the linear first-run path for a new user —
+  prerequisites, install, sign-in, check, use, switch account, uninstall, and
+  a table of the failures you can hit on the way. Every command in it was
+  run against the real CLI.
+
 ### Fixed
 
 - The dsh web panel no longer dies when the CLI that started it goes away. Its
@@ -20,6 +27,27 @@ is actually on disk.
   account route, but that route only works when the account grant is usable;
   without it the panel was told to use an account it cannot reach, and the web
   UI was left without a model to run.
+- The sign-in URL was truncated with an ellipsis inside the box, so the
+  address the user copied was broken and the panel never opened. It is now
+  printed on its own line, in full, whatever the terminal width.
+- `pi-dsh-bridge account` printed the sign-in URL and left the user to copy
+  it, while `dsh web` opened the interface by itself. The account command now
+  opens the browser when a human is at the terminal, the way `dsh web` does,
+  and still prints the URL for a scripted run that must not launch a browser.
+- The `doctor` credential warning told users to run `pi auth login
+  --provider deepseek`, which is not a pi command: `pi auth` only prints and
+  checks credentials. It now names the instruction that works (`/login` inside
+  Pi). The same stale command was removed from the README and the
+  troubleshooting guide.
+- The README quick path started with `npx pi-dsh-bridge install`, which
+  answers 404 until the package is published. It now shows the install from a
+  checkout, and, for that window, says plainly that the 404 is expected rather
+  than a broken install.
+- The getting-started guide now names the case where dsh cancels its own
+  sign-in and leaves `~/.dsh/.credentials.yaml` without the account grant:
+  `doctor` reports `dsh-account: absent`, the API-key route keeps working,
+  and signing in again plus `pi-dsh-bridge sync` is all it takes.
+
 - `uninstall` keeps any file whose current bytes are not provably the bytes
   `install` wrote, and names the reason, instead of deleting the file the user
   edited. Journal entries now record a `sha256` of what was written, and the

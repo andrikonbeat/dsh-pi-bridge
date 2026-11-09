@@ -161,6 +161,22 @@ describe('doctor', () => {
     }
   });
 
+  it('never suggests a pi command that does not exist', () => {
+    const box = createSandbox();
+    try {
+      const result = run(['doctor', '--json'], box);
+      assert.equal(result.status, 0, result.stderr);
+      const doc = JSON.parse(result.stdout);
+      const detail = checkById(doc, 'credential').detail;
+      // `pi auth login` is not a pi command: pi has no `auth login`. The
+      // instruction has to name something the user can actually run.
+      assert.doesNotMatch(detail, /pi auth login/);
+      assert.match(detail, /\/login/);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
   it('fails when settings.json does not parse', () => {
     const box = createSandbox({ settings: '{ nope' });
     try {
