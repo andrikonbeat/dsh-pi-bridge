@@ -19,6 +19,14 @@ is actually on disk.
 
 ### Fixed
 
+- The dsh web panel no longer dies when the CLI that started it goes away. Its
+  output goes to a file instead of a pipe: a pipe closes with the process that
+  read it, so the panel's first log line after that landed on a closed pipe and
+  killed it, leaving the web UI reconnecting to a panel that was gone.
+- The launcher now mounts the route it announces. The overlay pinned the
+  account route, but that route only works when the account grant is usable;
+  without it the panel was told to use an account it cannot reach, and the web
+  UI was left without a model to run.
 - The sign-in URL was truncated with an ellipsis inside the box, so the
   address the user copied was broken and the panel never opened. It is now
   printed on its own line, in full, whatever the terminal width.

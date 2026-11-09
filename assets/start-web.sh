@@ -92,6 +92,27 @@ if [ -f "$OVERLAY" ]; then
   PATCH_ARGS=(--patch "$OVERLAY")
 fi
 
+# The route the panel mounts has to be the route this launcher just announced.
+# The overlay pins the account route, but that route is only usable when its
+# grant is: without it the panel has to use the API-key route, the one this
+# launcher said it fell back to. Mounting the account route anyway leaves the
+# UI without a model to run, and the user is told the panel is ready. A patch
+# passed later wins, so the route patch is passed last.
+ROUTE_PATCH="$STATE_DIR/dsh-web-route.yml"
+if [ "$ACCOUNT_OK" = "1" ]; then
+  ROUTE_PROVIDER=deepseek-account
+else
+  ROUTE_PROVIDER=deepseek-official
+fi
+{
+  printf '%s\n' '- id: agent-default-model'
+  printf '%s\n' '  name: "@deepseek-ai/dsh-agent-default-model"'
+  printf '%s\n' '  config:'
+  printf '    provider: %s\n' "$ROUTE_PROVIDER"
+  printf '%s\n' '    model: deepseek-flash'
+} > "$ROUTE_PATCH"
+PATCH_ARGS+=(--patch "$ROUTE_PATCH")
+
 # Portable default: never a locale-specific "Documents" folder.
 WS="${DSH_WORKSPACE:-$DSH_HOME/workspace}"
 mkdir -p "$WS"

@@ -527,6 +527,41 @@ describe('the dsh web panel', () => {
     }
   });
 
+  it('keeps the panel alive after the CLI that launched it goes away', async () => {
+    const box = createSandbox();
+    try {
+      const port = await freePort();
+      const alive = path.join(box.root, 'alive');
+      // A panel that logs after the launcher hands over: the log line is the
+      // first write that lands on a closed pipe when the output is a pipe.
+      const launcherPath = writeLauncher(
+        box,
+        `printf 'http://127.0.0.1:${port}/?token=abc123\\n'\n` +
+          "sleep 0.5\n" +
+          "printf 'runtime log line\\n'\n" +
+          "sleep 0.5\n" +
+          `printf alive > '${alive}'`,
+      );
+      const started = await startDshWeb({
+        launcherPath,
+        env: { PATH: '/usr/bin:/bin' },
+        port,
+        timeoutMs: 10_000,
+        killGroup: () => {},
+      });
+
+      assert.equal(started.url, `http://127.0.0.1:${port}/?token=abc123`);
+      assert.equal(started.error, null);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      assert.ok(
+        fs.existsSync(alive),
+        'the panel died when the CLI closed its output; its first log line hit a closed pipe',
+      );
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
   it('kills the process group instead of leaving an orphan when no URL appears', async () => {
     const box = createSandbox();
     try {
