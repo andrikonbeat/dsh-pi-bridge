@@ -27,6 +27,13 @@ is actually on disk.
   account route, but that route only works when the account grant is usable;
   without it the panel was told to use an account it cannot reach, and the web
   UI was left without a model to run.
+- `doctor` reports the route the panel mounts, not the one the overlay alone
+  pins. The launcher passes the route it chose after the overlay, so probing
+  the overlay on its own described a route the panel never ran on.
+- The launcher probes the account dashboard with a browser's user agent. The
+  dashboard's WAF turns away a plain command line client and asks a browser
+  for a check instead, so the old probe reported the dashboard as blocked
+  from this machine for a dashboard the user's browser can open.
 - The sign-in URL was truncated with an ellipsis inside the box, so the
   address the user copied was broken and the panel never opened. It is now
   printed on its own line, in full, whatever the terminal width.

@@ -100,6 +100,7 @@ export function resolveLayout({ flags = {}, env = {}, home = os.homedir() } = {}
     tokenHelperPath: path.join(binDir, 'pi-dsh-token'),
     journalPath: path.join(stateDir, 'journal.json'),
     overlayPath: path.join(stateDir, 'dsh-overlay.yml'),
+    routePatchPath: path.join(stateDir, 'dsh-web-route.yml'),
     backupsDir: path.join(stateDir, 'backups'),
   };
 }

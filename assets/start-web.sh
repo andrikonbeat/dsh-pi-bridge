@@ -75,8 +75,15 @@ fi
 # When it is blocked from this machine (Cloudflare answers 403) the account
 # panel cannot load while inference still works. Say it once instead of
 # letting it look like a healthy route.
+#
+# The probe has to look like the browser that will actually sign in: the
+# dashboard sits behind a WAF that turns away a plain command line client
+# with 403 and asks a browser for a check instead. Probing with curl's own
+# user agent measures what curl may do, not what the user's browser may do,
+# and the answer was "blocked" for a dashboard the browser can open.
 if [ "$ACCOUNT_OK" = "1" ] && command -v curl >/dev/null 2>&1; then
   PLATFORM_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 \
+    -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36' \
     https://platform.deepseek.com/auth-api/v0/users/current 2>/dev/null || echo 000)"
   if [ "$PLATFORM_STATUS" = "403" ]; then
     echo "note: the DeepSeek account dashboard is blocked from this machine (HTTP 403)." >&2
