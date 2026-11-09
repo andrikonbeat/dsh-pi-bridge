@@ -68,6 +68,31 @@ Conventional Commits, one reviewable slice per commit, tests and docs alongside
 the behaviour they describe. Keep pull requests under roughly 400 changed lines;
 if a change needs more, split it and say why in the description.
 
+## Publishing a release
+
+Publishing is a human decision, and it needs two credentials that only the
+maintainer can create:
+
+1. An npm **automation token**: npmjs.com → Access Tokens → Automation Token.
+2. That token as the repository secret `NPM_TOKEN`:
+   `gh secret set NPM_TOKEN --repo andrikonbeat/dsh-pi-bridge`.
+
+Then the release is a tag:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The `Release` workflow checks that the tag matches the version in
+`package.json`, runs the tests, and publishes with npm provenance. Nothing
+publishes on a plain push to `main`.
+
+The package is not on npm until this happens, so `npm install -g
+pi-dsh-bridge` answers 404. That is expected, not a broken install: use the
+checkout (`npm install -g .`) or the tarball (`npm pack`, then
+`npm install -g ./pi-dsh-bridge-<version>.tgz`).
+
 ## License
 
 By contributing you agree your work is licensed under the MIT license in
