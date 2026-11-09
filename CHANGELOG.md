@@ -10,7 +10,28 @@ Hardening: the bridge can no longer destroy work it did not create, and the
 things it reported about a broken credential or a lost web panel now match what
 is actually on disk.
 
+### Added
+
+- `docs/getting-started.md`: the linear first-run path for a new user —
+  prerequisites, install, sign-in, check, use, switch account, uninstall, and
+  a table of the failures you can hit on the way. Every command in it was
+  run against the real CLI.
+
 ### Fixed
+
+- The `doctor` credential warning told users to run `pi auth login
+  --provider deepseek`, which is not a pi command: `pi auth` only prints and
+  checks credentials. It now names the instruction that works (`/login` inside
+  Pi). The same stale command was removed from the README and the
+  troubleshooting guide.
+- The README quick path started with `npx pi-dsh-bridge install`, which
+  answers 404 until the package is published. It now shows the install from a
+  checkout, and, for that window, says plainly that the 404 is expected rather
+  than a broken install.
+- The getting-started guide now names the case where dsh cancels its own
+  sign-in and leaves `~/.dsh/.credentials.yaml` without the account grant:
+  `doctor` reports `dsh-account: absent`, the API-key route keeps working,
+  and signing in again plus `pi-dsh-bridge sync` is all it takes.
 
 - `uninstall` keeps any file whose current bytes are not provably the bytes
   `install` wrote, and names the reason, instead of deleting the file the user

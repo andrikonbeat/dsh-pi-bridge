@@ -136,8 +136,8 @@ usable, the launcher uses the account route and does not touch the API key at
 all. When the account grant is unusable, it falls back to `DEEPSEEK_API_KEY`
 from the environment, or `deepseek.key` from
 `$PI_CODING_AGENT_DIR/auth.json`, and says loudly that dsh is then on the
-*other* wallet. To rotate the key, run `pi auth login --provider deepseek`
-again.
+*other* wallet. To rotate the key, run `/login` inside Pi again and choose
+DeepSeek.
 
 ## This tool
 
