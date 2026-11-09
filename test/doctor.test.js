@@ -189,6 +189,58 @@ describe('doctor', () => {
     }
   });
 
+  it('reports the route the panel mounts, not the one the overlay alone pins', () => {
+    const box = createSandbox();
+    try {
+      // The launcher passes the overlay first and the route it chose last,
+      // and dsh applies the last patch. A dsh that honours that is the only
+      // way to tell the two routes apart.
+      const overlay = path.join(box.stateDir, 'dsh-overlay.yml');
+      const route = path.join(box.stateDir, 'dsh-web-route.yml');
+      fs.mkdirSync(box.stateDir, { recursive: true });
+      fs.writeFileSync(
+        overlay,
+        '- id: agent-default-model\n  name: "@deepseek-ai/dsh-agent-default-model"\n' +
+          '  config:\n    provider: deepseek-account\n    model: deepseek-flash\n',
+      );
+      fs.writeFileSync(
+        route,
+        '- id: agent-default-model\n  name: "@deepseek-ai/dsh-agent-default-model"\n' +
+          '  config:\n    provider: deepseek-official\n    model: deepseek-flash\n',
+      );
+      const launcher = path.join(box.fakebin, 'dsh');
+      fs.writeFileSync(
+        launcher,
+        `#!/bin/sh
+patch=""
+prev=""
+for arg in "$@"; do
+  case "$arg" in
+    --version|-V) printf '0.2.1-rc.5\\n'; exit 0 ;;
+  esac
+  if [ "$prev" = "--patch" ] && [ -f "$arg" ]; then patch="$arg"; fi
+  prev="$arg"
+done
+if [ "$patch" = "" ]; then
+  printf -- '- id: agent-default-model\\n  config:\\n    provider: deepseek-official\\n    model: deepseek-flash\\n'
+else
+  while IFS= read -r line; do printf '%s\\n' "$line"; done < "$patch"
+fi
+exit 0
+`,
+        { mode: 0o755 },
+      );
+
+      const doc = JSON.parse(run(['doctor', '--json'], box).stdout);
+      const routeCheck = checkById(doc, 'dsh-route');
+      assert.equal(routeCheck.status, 'ok');
+      assert.match(routeCheck.detail, /provider: deepseek-official/);
+      assert.doesNotMatch(routeCheck.detail, /provider: deepseek-account/);
+    } finally {
+      cleanupSandbox(box);
+    }
+  });
+
   it('never describes a successful probe with a placeholder', () => {
     assert.doesNotMatch(describeRoute({ ok: true, provider: 'deepseek-account', model: 'deepseek-flash' }), /\?/);
     // A successful result that carries no values cannot be described, and

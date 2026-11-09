@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../paths.js';
 import { checkDshPresetCompatibility, checkDshVersion } from '../compat.js';
-import { describeRoute, diverges, probe } from '../dsh.js';
+import { describeRoute, diverges, probe, readEffectiveDefaultModel } from '../dsh.js';
 import { nodeCheck, preflight } from '../preflight.js';
 import { loadSettings, settingsMismatch } from '../settings.js';
 import { grantState } from '../dsh-account.js';
@@ -16,9 +16,9 @@ import { JournalError, readJournal } from '../journal.js';
 function readIfExists(file) {
   try {
     const stats = fs.statSync(file);
-    return { exists: true, mode: stats.mode & 0o777, size: stats.size };
+    return { exists: true, mode: stats.mode & 0o777, size: stats.size, text: fs.readFileSync(file, 'utf8') };
   } catch {
-    return { exists: false, mode: null, size: 0 };
+    return { exists: false, mode: null, size: 0, text: '' };
   }
 }
 
@@ -326,10 +326,31 @@ export function doctor({ options = {}, ui, layout, env = process.env, cliPath })
     });
   } else {
     const overlayExists = readIfExists(layout.overlayPath).exists;
-    const result = probe({ dshPath: facts.dsh.path, env, patchPath: overlayExists ? layout.overlayPath : null });
+    // The panel does not mount the overlay alone: the launcher passes the
+    // route it chose after it, so the route the panel runs on is the one in
+    // both. Probing the overlay on its own reports a route the panel never
+    // mounts.
+    const routePatchExists = readIfExists(layout.routePatchPath).exists;
+    const patches = [overlayExists ? layout.overlayPath : null, routePatchExists ? layout.routePatchPath : null]
+      .filter(Boolean);
+    const result = probe({ dshPath: facts.dsh.path, env, patchPaths: patches });
     let route;
     if (!result.ok) {
       route = { status: 'warn', detail: `config probe failed: ${result.error}` };
+    } else if (routePatchExists) {
+      const chosen = readEffectiveDefaultModel(readIfExists(layout.routePatchPath).text ?? '');
+      const mounted = chosen && chosen.provider ? chosen : null;
+      route = mounted && (result.provider !== mounted.provider || result.model !== mounted.model)
+        ? {
+            status: 'warn',
+            detail:
+              `the panel mounts ${describeRoute({ ok: true, ...mounted })} but the effective route is ` +
+              `${describeRoute(result)}; see docs/compatibility.md`,
+          }
+        : {
+            status: 'ok',
+            detail: `${describeRoute(result)} (the route the panel mounts; ${layout.routePatchPath})`,
+          };
     } else if (overlayExists) {
       route = diverges(result)
         ? {

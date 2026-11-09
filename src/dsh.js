@@ -25,10 +25,14 @@ const PROFILE = 'web';
  * installed. `--patch` applies after every bundle and after the user layer, and
  * an entry whose `id` already exists replaces it.
  */
-export function dumpConfig({ dshPath, env = process.env, patchPath = null, timeout = 20_000 }) {
+export function dumpConfig({ dshPath, env = process.env, patchPath = null, patchPaths = null, timeout = 20_000 }) {
   if (!dshPath) throw new DshError('dsh was not found on PATH');
   const args = ['--profile', PROFILE];
-  if (patchPath) args.push('--patch', patchPath);
+  // Every patch is applied in the order it is given, and the last one wins:
+  // the launcher passes the overlay first and the route it chose last, so
+  // the effective route is the one the panel mounts.
+  const patches = patchPaths ?? (patchPath ? [patchPath] : []);
+  for (const file of patches) args.push('--patch', file);
   args.push('--dump-config');
   const result = spawnSync(dshPath, args, { encoding: 'utf8', env, timeout });
   if (result.error) {
@@ -110,9 +114,9 @@ export function readEffectiveDefaultModel(document) {
  *
  * Returns { ok, provider, model, raw, error }.
  */
-export function probe({ dshPath, env = process.env, patchPath = null }) {
+export function probe({ dshPath, env = process.env, patchPath = null, patchPaths = null }) {
   try {
-    const raw = dumpConfig({ dshPath, env, patchPath });
+    const raw = dumpConfig({ dshPath, env, patchPath, patchPaths });
     const effective = readEffectiveDefaultModel(raw);
     if (!effective) {
       return {
